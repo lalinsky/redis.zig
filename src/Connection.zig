@@ -62,7 +62,7 @@ fn call(self: *Connection, comptime func: anytype, args: anytype) !Payload(@Type
     const p: Protocol = .{ .reader = &self.reader.interface, .writer = &self.writer.interface };
     return @call(.auto, func, .{p} ++ args) catch |err| switch (err) {
         error.ReadFailed => return self.reader.err orelse error.ReadFailed,
-        error.WriteFailed => return self.writer.err orelse error.ReadFailed,
+        error.WriteFailed => return self.writer.err orelse error.WriteFailed,
         else => |e| return e,
     };
 }

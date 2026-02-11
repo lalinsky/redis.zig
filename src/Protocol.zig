@@ -28,11 +28,7 @@ pub const Error = error{
     NotFound,
     ValueTooLarge,
     Exists,
-    ReadFailed,
-    WriteFailed,
-    EndOfStream,
-    StreamTooLong,
-};
+} || std.Io.Reader.Error || std.Io.Reader.DelimiterError || std.Io.Writer.Error;
 
 /// Returns true if the error is a protocol-level error where the connection
 /// is still valid and can be reused.
@@ -73,12 +69,12 @@ pub const SetMode = enum {
 
 pub fn get(self: Protocol, key: []const u8, buf: []u8, opts: GetOpts) Error!?Info {
     // Build command: mg <key> v f c [T<ttl>]
-    self.writer.print("mg {s} v f c", .{key}) catch return error.WriteFailed;
+    try self.writer.print("mg {s} v f c", .{key});
     if (opts.ttl) |ttl| {
-        self.writer.print(" T{d}", .{ttl}) catch return error.WriteFailed;
+        try self.writer.print(" T{d}", .{ttl});
     }
-    self.writer.writeAll("\r\n") catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.writeAll("\r\n");
+    try self.writer.flush();
 
     // Read response
     const response = try self.readResponse();
@@ -86,8 +82,8 @@ pub fn get(self: Protocol, key: []const u8, buf: []u8, opts: GetOpts) Error!?Inf
     switch (response) {
         .value => |info| {
             if (info.size > buf.len) return error.ValueTooLarge;
-            self.reader.readSliceAll(buf[0..info.size]) catch return error.ReadFailed;
-            _ = self.reader.takeDelimiterInclusive('\n') catch return error.ReadFailed;
+            try self.reader.readSliceAll(buf[0..info.size]);
+            _ = try self.reader.takeDelimiterInclusive('\n');
 
             return .{
                 .value = buf[0..info.size],
@@ -105,16 +101,16 @@ pub fn get(self: Protocol, key: []const u8, buf: []u8, opts: GetOpts) Error!?Inf
 
 pub fn set(self: Protocol, key: []const u8, value: []const u8, opts: SetOpts, mode: SetMode) Error!void {
     // Build command: ms <key> <size> [flags]
-    self.writer.print("ms {s} {d}", .{ key, value.len }) catch return error.WriteFailed;
+    try self.writer.print("ms {s} {d}", .{ key, value.len });
 
     if (opts.ttl > 0) {
-        self.writer.print(" T{d}", .{opts.ttl}) catch return error.WriteFailed;
+        try self.writer.print(" T{d}", .{opts.ttl});
     }
     if (opts.flags > 0) {
-        self.writer.print(" F{d}", .{opts.flags}) catch return error.WriteFailed;
+        try self.writer.print(" F{d}", .{opts.flags});
     }
     if (opts.cas) |cas| {
-        self.writer.print(" C{d}", .{cas}) catch return error.WriteFailed;
+        try self.writer.print(" C{d}", .{cas});
     }
 
     const mode_flag: ?u8 = switch (mode) {
@@ -125,13 +121,13 @@ pub fn set(self: Protocol, key: []const u8, value: []const u8, opts: SetOpts, mo
         .prepend => 'P',
     };
     if (mode_flag) |m| {
-        self.writer.print(" M{c}", .{m}) catch return error.WriteFailed;
+        try self.writer.print(" M{c}", .{m});
     }
 
-    self.writer.writeAll("\r\n") catch return error.WriteFailed;
-    self.writer.writeAll(value) catch return error.WriteFailed;
-    self.writer.writeAll("\r\n") catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.writeAll("\r\n");
+    try self.writer.writeAll(value);
+    try self.writer.writeAll("\r\n");
+    try self.writer.flush();
 
     // Read response
     const response = try self.readResponse();
@@ -149,8 +145,8 @@ pub fn set(self: Protocol, key: []const u8, value: []const u8, opts: SetOpts, mo
 // --- Delete ---
 
 pub fn delete(self: Protocol, key: []const u8) Error!void {
-    self.writer.print("md {s}\r\n", .{key}) catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.print("md {s}\r\n", .{key});
+    try self.writer.flush();
 
     const response = try self.readResponse();
 
@@ -174,12 +170,12 @@ pub fn decr(self: Protocol, key: []const u8, delta: u64) Error!u64 {
 
 fn arithmetic(self: Protocol, key: []const u8, delta: u64, is_decr: bool) Error!u64 {
     // ma <key> v D<delta> [MD]
-    self.writer.print("ma {s} v D{d}", .{ key, delta }) catch return error.WriteFailed;
+    try self.writer.print("ma {s} v D{d}", .{ key, delta });
     if (is_decr) {
-        self.writer.writeAll(" MD") catch return error.WriteFailed;
+        try self.writer.writeAll(" MD");
     }
-    self.writer.writeAll("\r\n") catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.writeAll("\r\n");
+    try self.writer.flush();
 
     const response = try self.readResponse();
 
@@ -187,8 +183,8 @@ fn arithmetic(self: Protocol, key: []const u8, delta: u64, is_decr: bool) Error!
         .value => |info| {
             var buf: [32]u8 = undefined;
             if (info.size > buf.len) return error.ServerError;
-            self.reader.readSliceAll(buf[0..info.size]) catch return error.ReadFailed;
-            _ = self.reader.takeDelimiterInclusive('\n') catch return error.ReadFailed;
+            try self.reader.readSliceAll(buf[0..info.size]);
+            _ = try self.reader.takeDelimiterInclusive('\n');
 
             return std.fmt.parseInt(u64, buf[0..info.size], 10) catch error.ServerError;
         },
@@ -201,8 +197,8 @@ fn arithmetic(self: Protocol, key: []const u8, delta: u64, is_decr: bool) Error!
 // --- Touch ---
 
 pub fn touch(self: Protocol, key: []const u8, ttl: u32) Error!void {
-    self.writer.print("mg {s} T{d}\r\n", .{ key, ttl }) catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.print("mg {s} T{d}\r\n", .{ key, ttl });
+    try self.writer.flush();
 
     const response = try self.readResponse();
 
@@ -217,10 +213,10 @@ pub fn touch(self: Protocol, key: []const u8, ttl: u32) Error!void {
 // --- Admin ---
 
 pub fn flushAll(self: Protocol) Error!void {
-    self.writer.writeAll("flush_all\r\n") catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.writeAll("flush_all\r\n");
+    try self.writer.flush();
 
-    const line = self.reader.takeDelimiterInclusive('\n') catch return error.ReadFailed;
+    const line = try self.reader.takeDelimiterInclusive('\n');
     const trimmed = std.mem.trimRight(u8, line, "\r\n");
 
     if (!std.mem.eql(u8, trimmed, "OK")) {
@@ -229,10 +225,10 @@ pub fn flushAll(self: Protocol) Error!void {
 }
 
 pub fn version(self: Protocol, buf: []u8) Error![]u8 {
-    self.writer.writeAll("version\r\n") catch return error.WriteFailed;
-    self.writer.flush() catch return error.WriteFailed;
+    try self.writer.writeAll("version\r\n");
+    try self.writer.flush();
 
-    const line = self.reader.takeDelimiterInclusive('\n') catch return error.ReadFailed;
+    const line = try self.reader.takeDelimiterInclusive('\n');
     const trimmed = std.mem.trimRight(u8, line, "\r\n");
 
     if (std.mem.startsWith(u8, trimmed, "VERSION ")) {
@@ -267,7 +263,7 @@ const ValueInfo = struct {
 };
 
 fn readResponse(self: Protocol) Error!Response {
-    const line = self.reader.takeDelimiterInclusive('\n') catch return error.ReadFailed;
+    const line = try self.reader.takeDelimiterInclusive('\n');
     const trimmed = std.mem.trimRight(u8, line, "\r\n");
     return parseResponse(trimmed);
 }
