@@ -6,7 +6,7 @@ pub const Connection = @import("Connection.zig");
 pub const Pool = @import("Pool.zig");
 pub const Protocol = @import("Protocol.zig");
 pub const Server = @import("Server.zig");
-pub const Hasher = @import("Hasher.zig").Hasher;
+pub const Hasher = @import("hasher.zig").Hasher;
 
 /// Connect to a single memcached server with default options.
 pub fn connect(gpa: Allocator, server: []const u8) !Client {

@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
 const Pool = @import("Pool.zig");
 const Server = @import("Server.zig");
-const Hasher = @import("Hasher.zig").Hasher;
+const Hasher = @import("hasher.zig").Hasher;
 
 const Client = @This();
 
