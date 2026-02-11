@@ -1,28 +1,24 @@
 const std = @import("std");
-const zio = @import("zio");
 const Allocator = std.mem.Allocator;
-const Protocol = @import("Protocol.zig");
+const Connection = @import("Connection.zig");
+const Pool = @import("Pool.zig");
 
 const Client = @This();
 
-gpa: Allocator,
-stream: zio.net.Stream,
-reader: zio.net.Stream.Reader,
-writer: zio.net.Stream.Writer,
-read_buffer: []u8,
-write_buffer: []u8,
+pool: Pool,
 
 pub const Options = struct {
     servers: []const []const u8 = &.{},
+    max_idle: usize = 2,
     read_buffer_size: usize = 4096,
     write_buffer_size: usize = 4096,
 };
 
-// Re-export Protocol types for convenience
-pub const Info = Protocol.Info;
-pub const GetOpts = Protocol.GetOpts;
-pub const SetOpts = Protocol.SetOpts;
-pub const Error = Protocol.Error;
+// Re-export types for convenience
+pub const Info = Connection.Info;
+pub const GetOpts = Connection.GetOpts;
+pub const SetOpts = Connection.SetOpts;
+pub const Error = Connection.Error;
 
 pub fn init(gpa: Allocator, options: Options) !Client {
     if (options.servers.len == 0) return error.ConnectionFailed;
@@ -30,43 +26,31 @@ pub fn init(gpa: Allocator, options: Options) !Client {
     const server = options.servers[0];
     const host, const port = parseServer(server) orelse return error.ConnectionFailed;
 
-    const stream = zio.net.tcpConnectToHost(host, port, .{}) catch return error.ConnectionFailed;
-    errdefer stream.close();
-
-    const read_buffer = try gpa.alloc(u8, options.read_buffer_size);
-    errdefer gpa.free(read_buffer);
-
-    const write_buffer = try gpa.alloc(u8, options.write_buffer_size);
-    errdefer gpa.free(write_buffer);
-
     return .{
-        .gpa = gpa,
-        .stream = stream,
-        .reader = stream.reader(read_buffer),
-        .writer = stream.writer(write_buffer),
-        .read_buffer = read_buffer,
-        .write_buffer = write_buffer,
+        .pool = Pool.init(gpa, host, port, .{
+            .max_idle = options.max_idle,
+            .read_buffer_size = options.read_buffer_size,
+            .write_buffer_size = options.write_buffer_size,
+        }),
     };
 }
 
 pub fn deinit(self: *Client) void {
-    self.stream.close();
-    self.gpa.free(self.read_buffer);
-    self.gpa.free(self.write_buffer);
+    self.pool.deinit();
 }
 
-fn call(self: *Client, comptime name: []const u8, args: anytype) !CallPayload(name) {
-    const proto_fn = @field(Protocol, name);
-    const p: Protocol = .{ .reader = &self.reader.interface, .writer = &self.writer.interface };
-    return @call(.auto, proto_fn, .{p} ++ args) catch |err| switch (err) {
-        error.ReadFailed => return self.reader.err orelse error.ReadFailed,
-        error.WriteFailed => return self.writer.err orelse error.ReadFailed,
-        else => |e| return e,
-    };
+fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnType(func) {
+    const conn = try self.pool.acquire();
+    var ok = false;
+    defer self.pool.release(conn, ok);
+
+    const result = try @call(.auto, func, .{conn} ++ args);
+    ok = true;
+    return result;
 }
 
-fn CallPayload(comptime name: []const u8) type {
-    const Return = @typeInfo(@TypeOf(@field(Protocol, name))).@"fn".return_type.?;
+fn ReturnType(comptime func: anytype) type {
+    const Return = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
     return @typeInfo(Return).error_union.payload;
 }
 
@@ -78,51 +62,51 @@ fn parseServer(server: []const u8) ?struct { []const u8, u16 } {
 }
 
 pub fn get(self: *Client, key: []const u8, buf: []u8, opts: GetOpts) !?Info {
-    return self.call("get", .{ key, buf, opts });
+    return self.withConnection(Connection.get, .{ key, buf, opts });
 }
 
 pub fn set(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.call("set", .{ key, value, opts, .set });
+    return self.withConnection(Connection.set, .{ key, value, opts, .set });
 }
 
 pub fn add(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.call("set", .{ key, value, opts, .add });
+    return self.withConnection(Connection.set, .{ key, value, opts, .add });
 }
 
 pub fn replace(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.call("set", .{ key, value, opts, .replace });
+    return self.withConnection(Connection.set, .{ key, value, opts, .replace });
 }
 
 pub fn append(self: *Client, key: []const u8, value: []const u8) !void {
-    return self.call("set", .{ key, value, .{}, .append });
+    return self.withConnection(Connection.set, .{ key, value, .{}, .append });
 }
 
 pub fn prepend(self: *Client, key: []const u8, value: []const u8) !void {
-    return self.call("set", .{ key, value, .{}, .prepend });
+    return self.withConnection(Connection.set, .{ key, value, .{}, .prepend });
 }
 
 pub fn delete(self: *Client, key: []const u8) !void {
-    return self.call("delete", .{key});
+    return self.withConnection(Connection.delete, .{key});
 }
 
 pub fn incr(self: *Client, key: []const u8, delta: u64) !u64 {
-    return self.call("incr", .{ key, delta });
+    return self.withConnection(Connection.incr, .{ key, delta });
 }
 
 pub fn decr(self: *Client, key: []const u8, delta: u64) !u64 {
-    return self.call("decr", .{ key, delta });
+    return self.withConnection(Connection.decr, .{ key, delta });
 }
 
 pub fn touch(self: *Client, key: []const u8, ttl: u32) !void {
-    return self.call("touch", .{ key, ttl });
+    return self.withConnection(Connection.touch, .{ key, ttl });
 }
 
 pub fn flushAll(self: *Client) !void {
-    return self.call("flushAll", .{});
+    return self.withConnection(Connection.flushAll, .{});
 }
 
 pub fn version(self: *Client, buf: []u8) ![]u8 {
-    return self.call("version", .{buf});
+    return self.withConnection(Connection.version, .{buf});
 }
 
 test "parseServer" {
