@@ -50,49 +50,48 @@ pub fn close(self: *Connection) void {
     self.gpa.free(self.write_buffer);
 }
 
-fn call(self: *Connection, comptime name: []const u8, args: anytype) !CallPayload(name) {
-    const proto_fn = @field(Protocol, name);
+fn call(self: *Connection, comptime func: anytype, args: anytype) !Payload(@TypeOf(func)) {
     const p: Protocol = .{ .reader = &self.reader.interface, .writer = &self.writer.interface };
-    return @call(.auto, proto_fn, .{p} ++ args) catch |err| switch (err) {
+    return @call(.auto, func, .{p} ++ args) catch |err| switch (err) {
         error.ReadFailed => return self.reader.err orelse error.ReadFailed,
         error.WriteFailed => return self.writer.err orelse error.ReadFailed,
         else => |e| return e,
     };
 }
 
-fn CallPayload(comptime name: []const u8) type {
-    const Return = @typeInfo(@TypeOf(@field(Protocol, name))).@"fn".return_type.?;
+fn Payload(comptime F: type) type {
+    const Return = @typeInfo(F).@"fn".return_type.?;
     return @typeInfo(Return).error_union.payload;
 }
 
 pub fn get(self: *Connection, key: []const u8, buf: []u8, opts: GetOpts) !?Info {
-    return self.call("get", .{ key, buf, opts });
+    return self.call(Protocol.get, .{ key, buf, opts });
 }
 
 pub fn set(self: *Connection, key: []const u8, value: []const u8, opts: SetOpts, mode: Protocol.SetMode) !void {
-    return self.call("set", .{ key, value, opts, mode });
+    return self.call(Protocol.set, .{ key, value, opts, mode });
 }
 
 pub fn delete(self: *Connection, key: []const u8) !void {
-    return self.call("delete", .{key});
+    return self.call(Protocol.delete, .{key});
 }
 
 pub fn incr(self: *Connection, key: []const u8, delta: u64) !u64 {
-    return self.call("incr", .{ key, delta });
+    return self.call(Protocol.incr, .{ key, delta });
 }
 
 pub fn decr(self: *Connection, key: []const u8, delta: u64) !u64 {
-    return self.call("decr", .{ key, delta });
+    return self.call(Protocol.decr, .{ key, delta });
 }
 
 pub fn touch(self: *Connection, key: []const u8, ttl: u32) !void {
-    return self.call("touch", .{ key, ttl });
+    return self.call(Protocol.touch, .{ key, ttl });
 }
 
 pub fn flushAll(self: *Connection) !void {
-    return self.call("flushAll", .{});
+    return self.call(Protocol.flushAll, .{});
 }
 
 pub fn version(self: *Connection, buf: []u8) ![]u8 {
-    return self.call("version", .{buf});
+    return self.call(Protocol.version, .{buf});
 }
