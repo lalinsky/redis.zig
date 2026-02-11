@@ -1,0 +1,17 @@
+.{
+    .name = .memcached,
+    .version = "0.0.1",
+    .fingerprint = 0x2e7f2a7825dfe6f7,
+    .minimum_zig_version = "0.15.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{
+        .zio = .{
+            .url = "git+https://github.com/lalinsky/zio?ref=v0.8.0#d7e56167f37bfedbd0dd470f56e01620e69a0d4a",
+            .hash = "zio-0.8.0-xHbVVHtnGACrWEGWxWvXl2rYDp9qDmJ-UO4hynM9cibA",
+        },
+    },
+}
