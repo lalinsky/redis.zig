@@ -5,6 +5,7 @@
 // });
 
 pub const std_options = std.Options{
+    .log_level = .debug,
     .log_scope_levels = &[_]std.log.ScopeLevel{
         .{ .scope = .websocket, .level = .warn },
     },

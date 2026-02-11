@@ -7,6 +7,8 @@ const Protocol = @import("Protocol.zig");
 const Server = @import("Server.zig");
 const Hasher = @import("hasher.zig").Hasher;
 
+const log = std.log.scoped(.memcached);
+
 const Client = @This();
 
 gpa: Allocator,
@@ -94,9 +96,17 @@ fn withAnyConnection(self: *Client, comptime func: anytype, args: anytype) !Retu
 fn withServer(self: *Client, server: *Server, comptime func: anytype, args: anytype) !ReturnType(func) {
     var attempts: usize = 0;
     while (true) {
+        log.debug("{s}:{d} attempt {d}", .{ server.host, server.port, attempts });
         const conn = server.pool.acquire() catch |err| {
             if (attempts < self.retry_attempts) {
                 attempts += 1;
+                log.debug("{s}:{d} acquire failed: {}, retry {d}/{d}", .{
+                    server.host,
+                    server.port,
+                    err,
+                    attempts,
+                    self.retry_attempts,
+                });
                 try zio.sleep(self.retry_interval);
                 continue;
             }
@@ -105,15 +115,25 @@ fn withServer(self: *Client, server: *Server, comptime func: anytype, args: anyt
         var ok = false;
         defer server.pool.release(conn, ok);
 
+        log.debug("{s}:{d} calling operation", .{ server.host, server.port });
         const result = @call(.auto, func, .{conn} ++ args) catch |err| {
+            log.debug("{s}:{d} operation error: {}", .{ server.host, server.port, err });
             ok = Protocol.isResumable(err);
             if (!ok and attempts < self.retry_attempts) {
                 attempts += 1;
+                log.debug("{s}:{d} operation failed: {}, retry {d}/{d}", .{
+                    server.host,
+                    server.port,
+                    err,
+                    attempts,
+                    self.retry_attempts,
+                });
                 try zio.sleep(self.retry_interval);
                 continue;
             }
             return err;
         };
+        log.debug("{s}:{d} operation success", .{ server.host, server.port });
         ok = true;
         return result;
     }
@@ -364,4 +384,41 @@ test "key distribution across servers" {
 
     // Total should equal num_keys (each key on exactly one server)
     try std.testing.expectEqual(num_keys, total);
+}
+
+test "retry after server restart" {
+    const testing = @import("testing.zig");
+
+    var client = try Client.init(std.testing.allocator, .{
+        .servers = &.{"127.0.0.1:21211"},
+        .retry_attempts = 5,
+        .retry_interval = .fromMilliseconds(500),
+    });
+    defer client.deinit();
+
+    // Set a key
+    try client.set("retry_test_key", "before_restart", .{});
+
+    // Verify it's there
+    var buf: [1024]u8 = undefined;
+    const info1 = try client.get("retry_test_key", &buf, .{});
+    try std.testing.expectEqualStrings("before_restart", info1.?.value);
+
+    // Stop immediately (no grace period)
+    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "memcached-1" });
+
+    // Start in background - will take time to be ready
+    var start_thread = try std.Thread.spawn(.{}, struct {
+        fn run() void {
+            testing.runDockerCompose(std.testing.allocator, &.{ "start", "memcached-1" }) catch {};
+        }
+    }.run, .{});
+
+    // Try immediately with stale connection - should fail and retry
+    try client.set("retry_test_key", "after_restart", .{});
+
+    start_thread.join();
+
+    const info2 = try client.get("retry_test_key", &buf, .{});
+    try std.testing.expectEqualStrings("after_restart", info2.?.value);
 }

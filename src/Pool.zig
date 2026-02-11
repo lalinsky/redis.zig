@@ -3,6 +3,8 @@ const zio = @import("zio");
 const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
 
+const log = std.log.scoped(.memcached);
+
 const Pool = @This();
 
 gpa: Allocator,
@@ -54,12 +56,14 @@ pub fn acquire(self: *Pool) !*Connection {
     if (self.idle.popFirst()) |node| {
         self.idle_count -= 1;
         self.mutex.unlock();
+        log.debug("pool {s}:{d} reusing connection (idle: {d})", .{ self.host, self.port, self.idle_count });
         return @fieldParentPtr("node", node);
     }
 
     self.mutex.unlock();
 
     // Create a new connection (outside of lock)
+    log.debug("pool {s}:{d} creating new connection", .{ self.host, self.port });
     const conn = try self.gpa.create(Connection);
     errdefer self.gpa.destroy(conn);
 
@@ -76,6 +80,7 @@ pub fn isEmpty(self: *Pool) bool {
 pub fn release(self: *Pool, conn: *Connection, ok: bool) void {
     // If error occurred, close the connection
     if (!ok) {
+        log.debug("pool {s}:{d} closing connection (error)", .{ self.host, self.port });
         conn.close();
         self.gpa.destroy(conn);
         return;
@@ -86,6 +91,7 @@ pub fn release(self: *Pool, conn: *Connection, ok: bool) void {
     // If pool is full, close the connection
     if (self.idle_count >= self.max_idle) {
         self.mutex.unlock();
+        log.debug("pool {s}:{d} closing connection (pool full)", .{ self.host, self.port });
         conn.close();
         self.gpa.destroy(conn);
         return;
@@ -94,5 +100,6 @@ pub fn release(self: *Pool, conn: *Connection, ok: bool) void {
     // Return to pool
     self.idle.prepend(&conn.node);
     self.idle_count += 1;
+    log.debug("pool {s}:{d} released connection (idle: {d})", .{ self.host, self.port, self.idle_count });
     self.mutex.unlock();
 }
