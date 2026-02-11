@@ -95,3 +95,164 @@ pub fn flushAll(self: *Connection) !void {
 pub fn version(self: *Connection, buf: []u8) ![]u8 {
     return self.call(Protocol.version, .{buf});
 }
+
+// --- Tests ---
+
+const testing = @import("testing.zig");
+
+test "simple get/set" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("test_key", "test_value", .{}, .set);
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("test_key", &buf, .{});
+
+    try std.testing.expect(info != null);
+    try std.testing.expectEqualStrings("test_value", info.?.value);
+}
+
+test "get non-existent key returns null" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("non_existent_key_12345", &buf, .{});
+
+    try std.testing.expect(info == null);
+}
+
+test "set with TTL and flags" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("ttl_key", "ttl_value", .{ .ttl = 60, .flags = 42 }, .set);
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("ttl_key", &buf, .{});
+
+    try std.testing.expect(info != null);
+    try std.testing.expectEqualStrings("ttl_value", info.?.value);
+    try std.testing.expectEqual(@as(u32, 42), info.?.flags);
+}
+
+test "delete" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("delete_key", "to_be_deleted", .{}, .set);
+    try conn.delete("delete_key");
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("delete_key", &buf, .{});
+    try std.testing.expect(info == null);
+}
+
+test "incr/decr" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("counter", "10", .{}, .set);
+
+    const val1 = try conn.incr("counter", 5);
+    try std.testing.expectEqual(@as(u64, 15), val1);
+
+    const val2 = try conn.decr("counter", 3);
+    try std.testing.expectEqual(@as(u64, 12), val2);
+}
+
+test "version" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    var buf: [64]u8 = undefined;
+    const ver = try conn.version(&buf);
+
+    try std.testing.expect(ver.len > 0);
+}
+
+test "add only if not exists" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    // Delete first to ensure clean state
+    conn.delete("add_key") catch {};
+
+    // First add should succeed
+    try conn.set("add_key", "first", .{}, .add);
+
+    // Second add should fail
+    try std.testing.expectError(error.NotStored, conn.set("add_key", "second", .{}, .add));
+
+    // Value should still be "first"
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("add_key", &buf, .{});
+    try std.testing.expectEqualStrings("first", info.?.value);
+}
+
+test "replace only if exists" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    // Delete first to ensure clean state
+    conn.delete("replace_key") catch {};
+
+    // Replace on non-existent should fail
+    try std.testing.expectError(error.NotStored, conn.set("replace_key", "value", .{}, .replace));
+
+    // Set the key
+    try conn.set("replace_key", "original", .{}, .set);
+
+    // Replace should now succeed
+    try conn.set("replace_key", "replaced", .{}, .replace);
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("replace_key", &buf, .{});
+    try std.testing.expectEqualStrings("replaced", info.?.value);
+}
+
+test "append/prepend" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("concat_key", "hello", .{}, .set);
+
+    try conn.set("concat_key", " world", .{}, .append);
+
+    var buf: [1024]u8 = undefined;
+    const info1 = try conn.get("concat_key", &buf, .{});
+    try std.testing.expectEqualStrings("hello world", info1.?.value);
+
+    try conn.set("concat_key", "say ", .{}, .prepend);
+
+    const info2 = try conn.get("concat_key", &buf, .{});
+    try std.testing.expectEqualStrings("say hello world", info2.?.value);
+}
+
+test "CAS (compare and swap)" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    try conn.set("cas_key", "original", .{}, .set);
+
+    var buf: [1024]u8 = undefined;
+    const info = try conn.get("cas_key", &buf, .{});
+    const cas_token = info.?.cas;
+
+    // CAS with correct token should succeed
+    try conn.set("cas_key", "updated", .{ .cas = cas_token }, .set);
+
+    // CAS with old token should fail
+    try std.testing.expectError(error.Exists, conn.set("cas_key", "again", .{ .cas = cas_token }, .set));
+}

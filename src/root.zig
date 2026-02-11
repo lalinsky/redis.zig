@@ -19,5 +19,6 @@ test {
     _ = Pool;
     _ = Protocol;
     _ = Server;
-    _ = @import("Hasher.zig");
+    _ = Hasher;
+    _ = @import("testing.zig");
 }

@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
     // Tests
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
 

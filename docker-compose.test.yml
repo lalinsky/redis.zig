@@ -1,0 +1,18 @@
+services:
+  memcached-1:
+    image: memcached:latest
+    ports:
+      - "21211:11211"
+    command: ["memcached", "-m", "64"]
+
+  memcached-2:
+    image: memcached:latest
+    ports:
+      - "21212:11211"
+    command: ["memcached", "-m", "64"]
+
+  memcached-3:
+    image: memcached:latest
+    ports:
+      - "21213:11211"
+    command: ["memcached", "-m", "64"]
