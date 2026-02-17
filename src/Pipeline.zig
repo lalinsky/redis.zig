@@ -190,14 +190,9 @@ pub fn exists(self: *Pipeline, keys: []const []const u8) !void {
     try self.appendPending(.integer);
 }
 
-pub fn ping(self: *Pipeline, message: ?[]const u8) !void {
-    if (message) |msg| {
-        try self.writeCommand(&.{ "PING", msg });
-        try self.appendPending(.bulk_string);
-    } else {
-        try self.writeCommand(&.{"PING"});
-        try self.appendPending(.simple_string);
-    }
+pub fn ping(self: *Pipeline) !void {
+    try self.writeCommand(&.{"PING"});
+    try self.appendPending(.simple_string);
 }
 
 pub fn flushDB(self: *Pipeline) !void {

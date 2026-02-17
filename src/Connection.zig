@@ -188,14 +188,9 @@ pub fn exists(self: *Connection, keys: []const []const u8) !i64 {
 
 // --- Server commands ---
 
-/// PING [message] - Ping the server
-pub fn ping(self: *Connection, message: ?[]const u8) !void {
-    if (message) |msg| {
-        var buf: [0]u8 = undefined;
-        _ = try self.call(Protocol.execBulkString, .{ &.{ "PING", msg }, &buf });
-    } else {
-        try self.call(Protocol.execSimpleString, .{&.{"PING"}});
-    }
+/// PING - Ping the server
+pub fn ping(self: *Connection) !void {
+    try self.call(Protocol.execSimpleString, .{&.{"PING"}});
 }
 
 /// FLUSHDB - Remove all keys from the current database
@@ -305,7 +300,7 @@ test "ping" {
     try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
     defer conn.close();
 
-    try conn.ping(null);
+    try conn.ping();
 }
 
 test "expire and ttl" {

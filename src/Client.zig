@@ -165,8 +165,8 @@ pub fn exists(self: *Client, keys: []const []const u8) !i64 {
 
 // --- Server commands ---
 
-pub fn ping(self: *Client, message: ?[]const u8) !void {
-    return self.withConnection(Connection.ping, .{message});
+pub fn ping(self: *Client) !void {
+    return self.withConnection(Connection.ping, .{});
 }
 
 pub fn flushDB(self: *Client) !void {

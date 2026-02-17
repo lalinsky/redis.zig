@@ -15,7 +15,7 @@ pub fn main() !void {
     defer client.deinit();
 
     // Ping
-    try client.ping(null);
+    try client.ping();
     std.debug.print("Connected to Redis server\n", .{});
 
     // Set
