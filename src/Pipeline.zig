@@ -96,38 +96,9 @@ fn mapReadError(self: *Pipeline, err: anyerror) anyerror {
 // --- Command queueing ---
 
 pub fn set(self: *Pipeline, key: []const u8, value: []const u8, opts: Connection.SetOpts) !void {
-    var args_buf: [8][]const u8 = undefined;
-    var args_count: usize = 0;
-    args_buf[args_count] = "SET";
-    args_count += 1;
-    args_buf[args_count] = key;
-    args_count += 1;
-    args_buf[args_count] = value;
-    args_count += 1;
-
     var ex_buf: [32]u8 = undefined;
-    if (opts.ex) |seconds| {
-        args_buf[args_count] = "EX";
-        args_count += 1;
-        const ex_str = std.fmt.bufPrint(&ex_buf, "{d}", .{seconds}) catch unreachable;
-        args_buf[args_count] = ex_str;
-        args_count += 1;
-    }
-
-    if (opts.nx) {
-        args_buf[args_count] = "NX";
-        args_count += 1;
-    } else if (opts.xx) {
-        args_buf[args_count] = "XX";
-        args_count += 1;
-    }
-
-    if (opts.get) {
-        args_buf[args_count] = "GET";
-        args_count += 1;
-    }
-
-    try self.writeCommand(args_buf[0..args_count]);
+    var cmd = opts.buildArgs(key, value, &ex_buf);
+    try self.writeCommand(cmd.args[0..cmd.len]);
     try self.appendPending(.ok_or_nil);
 }
 

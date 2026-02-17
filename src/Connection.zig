@@ -90,38 +90,9 @@ pub fn get(self: *Connection, key: []const u8, buf: []u8) !?[]u8 {
 
 /// SET key value [EX seconds] - Set the string value of a key
 pub fn set(self: *Connection, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    var args_buf: [8][]const u8 = undefined;
-    var args_count: usize = 0;
-    args_buf[args_count] = "SET";
-    args_count += 1;
-    args_buf[args_count] = key;
-    args_count += 1;
-    args_buf[args_count] = value;
-    args_count += 1;
-
     var ex_buf: [32]u8 = undefined;
-    if (opts.ex) |seconds| {
-        args_buf[args_count] = "EX";
-        args_count += 1;
-        const ex_str = std.fmt.bufPrint(&ex_buf, "{d}", .{seconds}) catch unreachable;
-        args_buf[args_count] = ex_str;
-        args_count += 1;
-    }
-
-    if (opts.nx) {
-        args_buf[args_count] = "NX";
-        args_count += 1;
-    } else if (opts.xx) {
-        args_buf[args_count] = "XX";
-        args_count += 1;
-    }
-
-    if (opts.get) {
-        args_buf[args_count] = "GET";
-        args_count += 1;
-    }
-
-    try self.call(Protocol.execOkOrNil, .{args_buf[0..args_count]});
+    var cmd = opts.buildArgs(key, value, &ex_buf);
+    try self.call(Protocol.execOkOrNil, .{cmd.args[0..cmd.len]});
 }
 
 pub const SetOpts = struct {
@@ -129,6 +100,41 @@ pub const SetOpts = struct {
     nx: bool = false, // only set if not exists
     xx: bool = false, // only set if exists
     get: bool = false, // return old value
+
+    pub const SetArgs = struct { args: [8][]const u8 = undefined, len: usize = 0 };
+
+    pub fn buildArgs(opts: SetOpts, key: []const u8, value: []const u8, ex_buf: *[32]u8) SetArgs {
+        var result: SetArgs = .{};
+        result.args[result.len] = "SET";
+        result.len += 1;
+        result.args[result.len] = key;
+        result.len += 1;
+        result.args[result.len] = value;
+        result.len += 1;
+
+        if (opts.ex) |seconds| {
+            result.args[result.len] = "EX";
+            result.len += 1;
+            const ex_str = std.fmt.bufPrint(ex_buf, "{d}", .{seconds}) catch unreachable;
+            result.args[result.len] = ex_str;
+            result.len += 1;
+        }
+
+        if (opts.nx) {
+            result.args[result.len] = "NX";
+            result.len += 1;
+        } else if (opts.xx) {
+            result.args[result.len] = "XX";
+            result.len += 1;
+        }
+
+        if (opts.get) {
+            result.args[result.len] = "GET";
+            result.len += 1;
+        }
+
+        return result;
+    }
 };
 
 /// DEL key [key ...] - Delete one or more keys
