@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Library module
-    const mod = b.addModule("memcached", .{
+    const mod = b.addModule("redis", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    example.root_module.addImport("memcached", mod);
+    example.root_module.addImport("redis", mod);
     example.root_module.addImport("zio", zio.module("zio"));
 
     const install = b.addInstallArtifact(example, .{});

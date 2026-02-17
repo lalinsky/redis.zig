@@ -1,6 +1,6 @@
 const std = @import("std");
 const zio = @import("zio");
-const memcached = @import("memcached");
+const redis = @import("redis");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -11,13 +11,12 @@ pub fn main() !void {
     defer rt.deinit();
 
     // Connect
-    var client = try memcached.connect(allocator, "localhost:11211");
+    var client = try redis.connect(allocator, "localhost:6379");
     defer client.deinit();
 
-    // Version
-    var ver_buf: [64]u8 = undefined;
-    const ver = try client.version(&ver_buf);
-    std.debug.print("Connected to memcached version: {s}\n", .{ver});
+    // Ping
+    try client.ping(null);
+    std.debug.print("Connected to Redis server\n", .{});
 
     // Set
     try client.set("hello", "world", .{});
@@ -25,29 +24,36 @@ pub fn main() !void {
 
     // Get
     var buf: [1024]u8 = undefined;
-    if (try client.get("hello", &buf, .{})) |info| {
-        std.debug.print("GET hello = {s} (flags={d}, cas={d})\n", .{ info.value, info.flags, info.cas });
+    if (try client.get("hello", &buf)) |value| {
+        std.debug.print("GET hello = {s}\n", .{value});
     } else {
         std.debug.print("GET hello = (not found)\n", .{});
     }
 
-    // Set with TTL and flags
-    try client.set("test", "value123", .{ .ttl = 60, .flags = 42 });
-    std.debug.print("SET test = value123 (ttl=60, flags=42)\n", .{});
+    // Set with TTL
+    try client.set("test", "value123", .{ .ex = 60 });
+    std.debug.print("SET test = value123 (ex=60)\n", .{});
 
-    if (try client.get("test", &buf, .{})) |info| {
-        std.debug.print("GET test = {s} (flags={d}, cas={d})\n", .{ info.value, info.flags, info.cas });
+    if (try client.get("test", &buf)) |value| {
+        const ttl = try client.ttl("test");
+        std.debug.print("GET test = {s} (ttl={d}s)\n", .{ value, ttl });
     }
 
     // Delete
-    try client.delete("hello");
-    std.debug.print("DELETE hello\n", .{});
+    const deleted = try client.del(&.{"hello"});
+    std.debug.print("DEL hello (deleted={d})\n", .{deleted});
 
-    if (try client.get("hello", &buf, .{})) |info| {
-        std.debug.print("GET hello = {s}\n", .{info.value});
+    if (try client.get("hello", &buf)) |value| {
+        std.debug.print("GET hello = {s}\n", .{value});
     } else {
         std.debug.print("GET hello = (not found)\n", .{});
     }
+
+    // Counters
+    try client.set("counter", "0", .{});
+    _ = try client.incrBy("counter", 5);
+    const val = try client.get("counter", &buf);
+    std.debug.print("Counter value: {s}\n", .{val.?});
 
     std.debug.print("\nDone!\n", .{});
 }

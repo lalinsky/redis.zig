@@ -3,7 +3,7 @@ const zio = @import("zio");
 const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
 
-const log = std.log.scoped(.memcached);
+const log = std.log.scoped(.redis);
 
 const Pool = @This();
 

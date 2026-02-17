@@ -1,19 +1,13 @@
-//! Meta protocol encoder/decoder for memcached.
+//! RESP2 (Redis Serialization Protocol) encoder/decoder
 //!
-//! Commands:
-//! - mg <key> [flags] - meta get
-//! - ms <key> <size> [flags] - meta set
-//! - md <key> [flags] - meta delete
-//! - ma <key> [flags] - meta arithmetic
-//! - mn - meta noop
+//! RESP2 data types:
+//! - Simple Strings: +OK\r\n
+//! - Errors: -ERR message\r\n
+//! - Integers: :123\r\n
+//! - Bulk Strings: $6\r\nfoobar\r\n (or $-1\r\n for nil)
+//! - Arrays: *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
 //!
-//! Response codes:
-//! - HD - hit/stored/deleted (success, no value)
-//! - VA <size> - value follows
-//! - EN - not found (end, miss)
-//! - NS - not stored
-//! - EX - exists (CAS conflict)
-//! - NF - not found (for delete/arithmetic)
+//! Commands are sent as arrays of bulk strings.
 
 const std = @import("std");
 
@@ -23,335 +17,190 @@ reader: *std.Io.Reader,
 writer: *std.Io.Writer,
 
 pub const Error = error{
-    ServerError,
-    NotStored,
-    NotFound,
+    RedisError,
+    ProtocolError,
+    UnexpectedType,
+    InvalidCharacter,
+    Overflow,
     ValueTooLarge,
-    Exists,
 } || std.Io.Reader.Error || std.Io.Reader.DelimiterError || std.Io.Writer.Error;
 
 /// Returns true if the error is a protocol-level error where the connection
 /// is still valid and can be reused.
 pub fn isResumable(err: anyerror) bool {
     return switch (err) {
-        error.NotStored,
-        error.NotFound,
-        error.Exists,
-        error.ValueTooLarge,
-        => true,
+        error.RedisError => true,
         else => false,
     };
 }
 
-pub const Info = struct {
-    value: []u8,
-    flags: u32,
-    cas: u64,
-};
+pub const Value = union(enum) {
+    simple_string: []const u8,
+    err: []const u8,
+    integer: i64,
+    bulk_string: ?[]const u8, // null represents nil
+    array: []const Value,
 
-pub const GetOpts = struct {
-    ttl: ?u32 = null,
-};
-
-pub const SetOpts = struct {
-    ttl: u32 = 0,
-    flags: u32 = 0,
-    cas: ?u64 = null,
-};
-
-pub const SetMode = enum {
-    set,
-    add,
-    replace,
-    append,
-    prepend,
-};
-
-pub fn get(self: Protocol, key: []const u8, buf: []u8, opts: GetOpts) Error!?Info {
-    // Build command: mg <key> v f c [T<ttl>]
-    try self.writer.print("mg {s} v f c", .{key});
-    if (opts.ttl) |ttl| {
-        try self.writer.print(" T{d}", .{ttl});
+    pub fn asSimpleString(self: Value) ![]const u8 {
+        return switch (self) {
+            .simple_string => |s| s,
+            else => error.UnexpectedType,
+        };
     }
-    try self.writer.writeAll("\r\n");
+
+    pub fn asInteger(self: Value) !i64 {
+        return switch (self) {
+            .integer => |i| i,
+            else => error.UnexpectedType,
+        };
+    }
+
+    pub fn asBulkString(self: Value) !?[]const u8 {
+        return switch (self) {
+            .bulk_string => |s| s,
+            else => error.UnexpectedType,
+        };
+    }
+
+    pub fn asArray(self: Value) ![]const Value {
+        return switch (self) {
+            .array => |a| a,
+            else => error.UnexpectedType,
+        };
+    }
+};
+
+// --- Writing (Encoding) ---
+
+/// Write a RESP command as an array of bulk strings
+pub fn writeCommand(self: Protocol, args: []const []const u8) Error!void {
+    try self.writer.print("*{d}\r\n", .{args.len});
+    for (args) |arg| {
+        try self.writer.print("${d}\r\n", .{arg.len});
+        try self.writer.writeAll(arg);
+        try self.writer.writeAll("\r\n");
+    }
     try self.writer.flush();
-
-    // Read response
-    const response = try self.readResponse();
-
-    switch (response) {
-        .value => |info| {
-            if (info.size > buf.len) return error.ValueTooLarge;
-            try self.reader.readSliceAll(buf[0..info.size]);
-            _ = try self.reader.takeDelimiterInclusive('\n');
-
-            return .{
-                .value = buf[0..info.size],
-                .flags = info.flags orelse 0,
-                .cas = info.cas orelse 0,
-            };
-        },
-        .not_found => return null,
-        .server_error => return error.ServerError,
-        else => return error.ServerError,
-    }
 }
 
-// --- Set ---
+// --- Reading (Decoding) ---
 
-pub fn set(self: Protocol, key: []const u8, value: []const u8, opts: SetOpts, mode: SetMode) Error!void {
-    // Build command: ms <key> <size> [flags]
-    try self.writer.print("ms {s} {d}", .{ key, value.len });
+/// Read a RESP value. Caller owns returned memory.
+pub fn readValue(self: Protocol, allocator: std.mem.Allocator) Error!Value {
+    const line = try self.reader.takeDelimiterInclusive('\n');
+    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
 
-    if (opts.ttl > 0) {
-        try self.writer.print(" T{d}", .{opts.ttl});
-    }
-    if (opts.flags > 0) {
-        try self.writer.print(" F{d}", .{opts.flags});
-    }
-    if (opts.cas) |cas| {
-        try self.writer.print(" C{d}", .{cas});
-    }
+    const type_byte = line[0];
+    const data = line[1 .. line.len - 2]; // strip type byte and \r\n
 
-    const mode_flag: ?u8 = switch (mode) {
-        .set => null,
-        .add => 'E',
-        .replace => 'R',
-        .append => 'A',
-        .prepend => 'P',
+    return switch (type_byte) {
+        '+' => .{ .simple_string = try allocator.dupe(u8, data) },
+        '-' => .{ .err = try allocator.dupe(u8, data) },
+        ':' => .{ .integer = try std.fmt.parseInt(i64, data, 10) },
+        '$' => try self.readBulkString(allocator, data),
+        '*' => try self.readArray(allocator, data),
+        else => error.ProtocolError,
     };
-    if (mode_flag) |m| {
-        try self.writer.print(" M{c}", .{m});
-    }
-
-    try self.writer.writeAll("\r\n");
-    try self.writer.writeAll(value);
-    try self.writer.writeAll("\r\n");
-    try self.writer.flush();
-
-    // Read response
-    const response = try self.readResponse();
-
-    switch (response) {
-        .hit => return,
-        .not_stored => return error.NotStored,
-        .exists => return error.Exists,
-        .not_found => return error.NotFound,
-        .server_error => return error.ServerError,
-        else => return error.ServerError,
-    }
 }
 
-// --- Delete ---
+fn readBulkString(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) Error!Value {
+    const len = try std.fmt.parseInt(i64, len_str, 10);
+    if (len == -1) return .{ .bulk_string = null }; // nil
+    if (len < 0) return error.ProtocolError;
 
-pub fn delete(self: Protocol, key: []const u8) Error!void {
-    try self.writer.print("md {s}\r\n", .{key});
-    try self.writer.flush();
+    const size: usize = @intCast(len);
+    const buf = try allocator.alloc(u8, size);
+    errdefer allocator.free(buf);
 
-    const response = try self.readResponse();
+    try self.reader.readSliceAll(buf);
+    const crlf = try self.reader.takeDelimiterInclusive('\n');
+    if (crlf.len != 2 or crlf[0] != '\r') return error.ProtocolError;
 
-    switch (response) {
-        .hit => return,
-        .not_found => return error.NotFound,
-        .server_error => return error.ServerError,
-        else => return error.ServerError,
+    return .{ .bulk_string = buf };
+}
+
+fn readArray(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) Error!Value {
+    const len = try std.fmt.parseInt(i64, len_str, 10);
+    if (len == -1) return .{ .array = &.{} }; // nil array (empty slice)
+    if (len < 0) return error.ProtocolError;
+
+    const size: usize = @intCast(len);
+    const arr = try allocator.alloc(Value, size);
+    errdefer allocator.free(arr);
+
+    for (arr) |*elem| {
+        elem.* = try self.readValue(allocator);
     }
+
+    return .{ .array = arr };
 }
 
-// --- Arithmetic ---
-
-pub fn incr(self: Protocol, key: []const u8, delta: u64) Error!u64 {
-    return self.arithmetic(key, delta, false);
-}
-
-pub fn decr(self: Protocol, key: []const u8, delta: u64) Error!u64 {
-    return self.arithmetic(key, delta, true);
-}
-
-fn arithmetic(self: Protocol, key: []const u8, delta: u64, is_decr: bool) Error!u64 {
-    // ma <key> v D<delta> [MD]
-    try self.writer.print("ma {s} v D{d}", .{ key, delta });
-    if (is_decr) {
-        try self.writer.writeAll(" MD");
-    }
-    try self.writer.writeAll("\r\n");
-    try self.writer.flush();
-
-    const response = try self.readResponse();
-
-    switch (response) {
-        .value => |info| {
-            var buf: [32]u8 = undefined;
-            if (info.size > buf.len) return error.ServerError;
-            try self.reader.readSliceAll(buf[0..info.size]);
-            _ = try self.reader.takeDelimiterInclusive('\n');
-
-            return std.fmt.parseInt(u64, buf[0..info.size], 10) catch error.ServerError;
+/// Free memory allocated by readValue
+pub fn freeValue(allocator: std.mem.Allocator, value: Value) void {
+    switch (value) {
+        .simple_string => |s| allocator.free(s),
+        .err => |s| allocator.free(s),
+        .integer => {},
+        .bulk_string => |s| if (s) |str| allocator.free(str),
+        .array => |arr| {
+            for (arr) |elem| {
+                freeValue(allocator, elem);
+            }
+            allocator.free(arr);
         },
-        .not_found => return error.NotFound,
-        .server_error => return error.ServerError,
-        else => return error.ServerError,
     }
 }
 
-// --- Touch ---
+// --- High-level command helpers ---
 
-pub fn touch(self: Protocol, key: []const u8, ttl: u32) Error!void {
-    try self.writer.print("mg {s} T{d}\r\n", .{ key, ttl });
-    try self.writer.flush();
-
-    const response = try self.readResponse();
-
-    switch (response) {
-        .hit => return,
-        .not_found => return error.NotFound,
-        .server_error => return error.ServerError,
-        else => return error.ServerError,
-    }
-}
-
-// --- Admin ---
-
-pub fn flushAll(self: Protocol) Error!void {
-    try self.writer.writeAll("flush_all\r\n");
-    try self.writer.flush();
-
+/// Execute a command and expect a simple string response (like "OK")
+pub fn execSimpleString(self: Protocol, args: []const []const u8) Error!void {
+    try self.writeCommand(args);
+    // We can't allocate here without an allocator, so we'll read inline
     const line = try self.reader.takeDelimiterInclusive('\n');
-    const trimmed = std.mem.trimRight(u8, line, "\r\n");
+    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
 
-    if (!std.mem.eql(u8, trimmed, "OK")) {
-        return error.ServerError;
-    }
+    if (line[0] == '+') return; // OK
+    if (line[0] == '-') return error.RedisError;
+    return error.UnexpectedType;
 }
 
-pub fn version(self: Protocol, buf: []u8) Error![]u8 {
-    try self.writer.writeAll("version\r\n");
-    try self.writer.flush();
-
+/// Execute a command and expect an integer response
+pub fn execInteger(self: Protocol, args: []const []const u8) Error!i64 {
+    try self.writeCommand(args);
     const line = try self.reader.takeDelimiterInclusive('\n');
-    const trimmed = std.mem.trimRight(u8, line, "\r\n");
+    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
 
-    if (std.mem.startsWith(u8, trimmed, "VERSION ")) {
-        const ver = trimmed[8..];
-        if (ver.len > buf.len) return error.ValueTooLarge;
-        @memcpy(buf[0..ver.len], ver);
-        return buf[0..ver.len];
+    if (line[0] == ':') {
+        return try std.fmt.parseInt(i64, line[1 .. line.len - 2], 10);
     }
-    return error.ServerError;
+    if (line[0] == '-') return error.RedisError;
+    return error.UnexpectedType;
 }
 
-// --- Response parsing ---
-
-const Response = union(enum) {
-    hit: HitInfo,
-    value: ValueInfo,
-    not_found,
-    not_stored,
-    exists,
-    server_error: []const u8,
-};
-
-const HitInfo = struct {
-    flags: ?u32 = null,
-    cas: ?u64 = null,
-};
-
-const ValueInfo = struct {
-    size: usize,
-    flags: ?u32 = null,
-    cas: ?u64 = null,
-};
-
-fn readResponse(self: Protocol) Error!Response {
+/// Execute a command and expect a bulk string response
+/// Returns slice into the provided buffer, or null for nil
+pub fn execBulkString(self: Protocol, args: []const []const u8, buf: []u8) Error!?[]u8 {
+    try self.writeCommand(args);
     const line = try self.reader.takeDelimiterInclusive('\n');
-    const trimmed = std.mem.trimRight(u8, line, "\r\n");
-    return parseResponse(trimmed);
-}
+    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
 
-fn parseResponse(line: []const u8) Error!Response {
-    if (line.len < 2) return error.ServerError;
+    if (line[0] == '$') {
+        const len = try std.fmt.parseInt(i64, line[1 .. line.len - 2], 10);
+        if (len == -1) return null; // nil
+        if (len < 0) return error.ProtocolError;
 
-    if (std.mem.startsWith(u8, line, "VA ")) {
-        return parseValueResponse(line[3..]);
-    } else if (std.mem.startsWith(u8, line, "HD")) {
-        return .{ .hit = parseFlags(line[2..]) };
-    } else if (std.mem.startsWith(u8, line, "EN")) {
-        return .not_found;
-    } else if (std.mem.startsWith(u8, line, "NS")) {
-        return .not_stored;
-    } else if (std.mem.startsWith(u8, line, "EX")) {
-        return .exists;
-    } else if (std.mem.startsWith(u8, line, "NF")) {
-        return .not_found;
-    } else if (std.mem.startsWith(u8, line, "SERVER_ERROR")) {
-        return .{ .server_error = line };
+        const size: usize = @intCast(len);
+        if (size > buf.len) return error.ValueTooLarge;
+
+        try self.reader.readSliceAll(buf[0..size]);
+        const crlf = try self.reader.takeDelimiterInclusive('\n');
+        if (crlf.len != 2 or crlf[0] != '\r') return error.ProtocolError;
+
+        return buf[0..size];
     }
-
-    return error.ServerError;
+    if (line[0] == '-') return error.RedisError;
+    return error.UnexpectedType;
 }
 
-fn parseValueResponse(rest: []const u8) Error!Response {
-    var it = std.mem.splitScalar(u8, rest, ' ');
-    const size_str = it.next() orelse return error.ServerError;
-    const size = std.fmt.parseInt(usize, size_str, 10) catch return error.ServerError;
-
-    var info = ValueInfo{ .size = size };
-
-    while (it.next()) |flag| {
-        if (flag.len == 0) continue;
-        switch (flag[0]) {
-            'f' => info.flags = std.fmt.parseInt(u32, flag[1..], 10) catch null,
-            'c' => info.cas = std.fmt.parseInt(u64, flag[1..], 10) catch null,
-            else => {},
-        }
-    }
-
-    return .{ .value = info };
-}
-
-fn parseFlags(rest: []const u8) HitInfo {
-    var info = HitInfo{};
-    var it = std.mem.splitScalar(u8, rest, ' ');
-
-    while (it.next()) |flag| {
-        if (flag.len == 0) continue;
-        switch (flag[0]) {
-            'f' => info.flags = std.fmt.parseInt(u32, flag[1..], 10) catch null,
-            'c' => info.cas = std.fmt.parseInt(u64, flag[1..], 10) catch null,
-            else => {},
-        }
-    }
-
-    return info;
-}
-
-// --- Tests ---
-
-test "parseResponse VA" {
-    const resp = try parseResponse("VA 5 f123 c456789");
-    try std.testing.expectEqual(Response{ .value = .{
-        .size = 5,
-        .flags = 123,
-        .cas = 456789,
-    } }, resp);
-}
-
-test "parseResponse HD" {
-    const resp = try parseResponse("HD");
-    try std.testing.expectEqual(Response{ .hit = .{} }, resp);
-}
-
-test "parseResponse EN" {
-    const resp = try parseResponse("EN");
-    try std.testing.expectEqual(Response.not_found, resp);
-}
-
-test "parseResponse NS" {
-    const resp = try parseResponse("NS");
-    try std.testing.expectEqual(Response.not_stored, resp);
-}
-
-test "parseResponse EX" {
-    const resp = try parseResponse("EX");
-    try std.testing.expectEqual(Response.exists, resp);
-}
+pub const Error2 = Error || error{ValueTooLarge};

@@ -4,23 +4,19 @@ const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
 const Pool = @import("Pool.zig");
 const Protocol = @import("Protocol.zig");
-const Server = @import("Server.zig");
-const Hasher = @import("hasher.zig").Hasher;
 
-const log = std.log.scoped(.memcached);
+const log = std.log.scoped(.redis);
 
 const Client = @This();
 
 gpa: Allocator,
-servers: []Server,
-hasher: Hasher,
-round_robin: std.atomic.Value(usize),
+host: []const u8,
+port: u16,
+pool: Pool,
 retry_attempts: usize,
 retry_interval: zio.Duration,
 
 pub const Options = struct {
-    servers: []const []const u8 = &.{},
-    hasher: Hasher = .none,
     max_idle: usize = 2,
     read_buffer_size: usize = 4096,
     write_buffer_size: usize = 4096,
@@ -32,16 +28,11 @@ pub const Options = struct {
 };
 
 // Re-export types for convenience
-pub const Info = Connection.Info;
-pub const GetOpts = Connection.GetOpts;
 pub const SetOpts = Connection.SetOpts;
 pub const Error = Connection.Error;
 
-pub fn init(gpa: Allocator, options: Options) !Client {
-    if (options.servers.len == 0) return error.NoServers;
-
-    const servers = try gpa.alloc(Server, options.servers.len);
-    errdefer gpa.free(servers);
+pub fn init(gpa: Allocator, server: []const u8, options: Options) !Client {
+    const host, const port = parseServer(server) orelse return error.InvalidServer;
 
     const pool_opts: Pool.Options = .{
         .max_idle = options.max_idle,
@@ -52,57 +43,30 @@ pub fn init(gpa: Allocator, options: Options) !Client {
         .write_timeout = options.write_timeout,
     };
 
-    for (options.servers, 0..) |server_str, i| {
-        const host, const port = parseServer(server_str) orelse return error.InvalidServer;
-        servers[i] = Server.init(gpa, host, port, pool_opts);
-    }
-
     return .{
         .gpa = gpa,
-        .servers = servers,
-        .hasher = options.hasher,
-        .round_robin = std.atomic.Value(usize).init(0),
+        .host = host,
+        .port = port,
+        .pool = Pool.init(gpa, host, port, pool_opts),
         .retry_attempts = options.retry_attempts,
         .retry_interval = options.retry_interval,
     };
 }
 
 pub fn deinit(self: *Client) void {
-    for (self.servers) |*server| {
-        server.deinit();
-    }
-    self.gpa.free(self.servers);
+    self.pool.deinit();
 }
 
-fn pickServer(self: *Client, key: []const u8) *Server {
-    if (self.servers.len == 1) return &self.servers[0];
-
-    const index = switch (self.hasher) {
-        .none => self.round_robin.fetchAdd(1, .monotonic) % self.servers.len,
-        else => self.hasher.pick(self.servers, key),
-    };
-    return &self.servers[index];
-}
-
-fn withConnection(self: *Client, key: []const u8, comptime func: anytype, args: anytype) !ReturnType(func) {
-    return self.withServer(self.pickServer(key), func, args);
-}
-
-fn withAnyConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnType(func) {
-    const index = self.round_robin.fetchAdd(1, .monotonic) % self.servers.len;
-    return self.withServer(&self.servers[index], func, args);
-}
-
-fn withServer(self: *Client, server: *Server, comptime func: anytype, args: anytype) !ReturnType(func) {
+fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnType(func) {
     var attempts: usize = 0;
     while (true) {
-        log.debug("{s}:{d} attempt {d}", .{ server.host, server.port, attempts });
-        const conn = server.pool.acquire() catch |err| {
+        log.debug("{s}:{d} attempt {d}", .{ self.host, self.port, attempts });
+        const conn = self.pool.acquire() catch |err| {
             if (attempts < self.retry_attempts) {
                 attempts += 1;
                 log.debug("{s}:{d} acquire failed: {}, retry {d}/{d}", .{
-                    server.host,
-                    server.port,
+                    self.host,
+                    self.port,
                     err,
                     attempts,
                     self.retry_attempts,
@@ -113,17 +77,17 @@ fn withServer(self: *Client, server: *Server, comptime func: anytype, args: anyt
             return err;
         };
         var ok = false;
-        defer server.pool.release(conn, ok);
+        defer self.pool.release(conn, ok);
 
-        log.debug("{s}:{d} calling operation", .{ server.host, server.port });
+        log.debug("{s}:{d} calling operation", .{ self.host, self.port });
         const result = @call(.auto, func, .{conn} ++ args) catch |err| {
-            log.debug("{s}:{d} operation error: {}", .{ server.host, server.port, err });
+            log.debug("{s}:{d} operation error: {}", .{ self.host, self.port, err });
             ok = Protocol.isResumable(err);
             if (!ok and attempts < self.retry_attempts) {
                 attempts += 1;
                 log.debug("{s}:{d} operation failed: {}, retry {d}/{d}", .{
-                    server.host,
-                    server.port,
+                    self.host,
+                    self.port,
                     err,
                     attempts,
                     self.retry_attempts,
@@ -133,7 +97,7 @@ fn withServer(self: *Client, server: *Server, comptime func: anytype, args: anyt
             }
             return err;
         };
-        log.debug("{s}:{d} operation success", .{ server.host, server.port });
+        log.debug("{s}:{d} operation success", .{ self.host, self.port });
         ok = true;
         return result;
     }
@@ -151,62 +115,70 @@ fn parseServer(server: []const u8) ?struct { []const u8, u16 } {
     return .{ host, port };
 }
 
-// --- Key-based operations (use pickServer) ---
+// --- String commands ---
 
-pub fn get(self: *Client, key: []const u8, buf: []u8, opts: GetOpts) !?Info {
-    return self.withConnection(key, Connection.get, .{ key, buf, opts });
+pub fn get(self: *Client, key: []const u8, buf: []u8) !?[]u8 {
+    return self.withConnection(Connection.get, .{ key, buf });
 }
 
 pub fn set(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.withConnection(key, Connection.set, .{ key, value, opts, .set });
+    return self.withConnection(Connection.set, .{ key, value, opts });
 }
 
-pub fn add(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.withConnection(key, Connection.set, .{ key, value, opts, .add });
+pub fn del(self: *Client, keys: []const []const u8) !i64 {
+    return self.withConnection(Connection.del, .{keys});
 }
 
-pub fn replace(self: *Client, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    return self.withConnection(key, Connection.set, .{ key, value, opts, .replace });
+pub fn incr(self: *Client, key: []const u8) !i64 {
+    return self.withConnection(Connection.incr, .{key});
 }
 
-pub fn append(self: *Client, key: []const u8, value: []const u8) !void {
-    return self.withConnection(key, Connection.set, .{ key, value, .{}, .append });
+pub fn incrBy(self: *Client, key: []const u8, delta: i64) !i64 {
+    return self.withConnection(Connection.incrBy, .{ key, delta });
 }
 
-pub fn prepend(self: *Client, key: []const u8, value: []const u8) !void {
-    return self.withConnection(key, Connection.set, .{ key, value, .{}, .prepend });
+pub fn decr(self: *Client, key: []const u8) !i64 {
+    return self.withConnection(Connection.decr, .{key});
 }
 
-pub fn delete(self: *Client, key: []const u8) !void {
-    return self.withConnection(key, Connection.delete, .{key});
+pub fn decrBy(self: *Client, key: []const u8, delta: i64) !i64 {
+    return self.withConnection(Connection.decrBy, .{ key, delta });
 }
 
-pub fn incr(self: *Client, key: []const u8, delta: u64) !u64 {
-    return self.withConnection(key, Connection.incr, .{ key, delta });
+pub fn expire(self: *Client, key: []const u8, seconds: u32) !bool {
+    return self.withConnection(Connection.expire, .{ key, seconds });
 }
 
-pub fn decr(self: *Client, key: []const u8, delta: u64) !u64 {
-    return self.withConnection(key, Connection.decr, .{ key, delta });
+pub fn ttl(self: *Client, key: []const u8) !i64 {
+    return self.withConnection(Connection.ttl, .{key});
 }
 
-pub fn touch(self: *Client, key: []const u8, ttl: u32) !void {
-    return self.withConnection(key, Connection.touch, .{ key, ttl });
+pub fn exists(self: *Client, keys: []const []const u8) !i64 {
+    return self.withConnection(Connection.exists, .{keys});
 }
 
-// --- Non-key operations ---
+// --- Server commands ---
 
-pub fn version(self: *Client, buf: []u8) ![]u8 {
-    return self.withAnyConnection(Connection.version, .{buf});
+pub fn ping(self: *Client, message: ?[]const u8) !void {
+    return self.withConnection(Connection.ping, .{message});
+}
+
+pub fn flushDB(self: *Client) !void {
+    return self.withConnection(Connection.flushDB, .{});
+}
+
+pub fn dbSize(self: *Client) !i64 {
+    return self.withConnection(Connection.dbSize, .{});
 }
 
 // --- Tests ---
 
 test "parseServer" {
     {
-        const result = parseServer("localhost:11211");
+        const result = parseServer("localhost:6379");
         try std.testing.expect(result != null);
         try std.testing.expectEqualStrings("localhost", result.?[0]);
-        try std.testing.expectEqual(11211, result.?[1]);
+        try std.testing.expectEqual(6379, result.?[1]);
     }
     {
         const result = parseServer("invalid");
@@ -215,182 +187,84 @@ test "parseServer" {
 }
 
 test "parseServer ipv6" {
-    const result = parseServer("[::1]:11211");
+    const result = parseServer("[::1]:6379");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("[::1]", result.?[0]);
-    try std.testing.expectEqual(11211, result.?[1]);
+    try std.testing.expectEqual(6379, result.?[1]);
 }
 
 test "Client get/set" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-    });
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_test_key", "client_test_value", .{});
 
     var buf: [1024]u8 = undefined;
-    const info = try client.get("client_test_key", &buf, .{});
+    const value = try client.get("client_test_key", &buf);
 
-    try std.testing.expect(info != null);
-    try std.testing.expectEqualStrings("client_test_value", info.?.value);
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("client_test_value", value.?);
 }
 
 test "Client get non-existent returns null" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-    });
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     var buf: [1024]u8 = undefined;
-    const info = try client.get("non_existent_client_key", &buf, .{});
+    const value = try client.get("non_existent_client_key", &buf);
 
-    try std.testing.expect(info == null);
+    try std.testing.expect(value == null);
 }
 
 test "Client incr/decr" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-    });
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_counter", "100", .{});
 
-    const val1 = try client.incr("client_counter", 10);
+    const val1 = try client.incrBy("client_counter", 10);
     try std.testing.expectEqual(110, val1);
 
-    const val2 = try client.decr("client_counter", 5);
+    const val2 = try client.decrBy("client_counter", 5);
     try std.testing.expectEqual(105, val2);
 }
 
-test "Client delete" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-    });
+test "Client del" {
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_delete_key", "to_delete", .{});
-    try client.delete("client_delete_key");
+    const deleted = try client.del(&.{"client_delete_key"});
+    try std.testing.expectEqual(@as(i64, 1), deleted);
 
     var buf: [1024]u8 = undefined;
-    const info = try client.get("client_delete_key", &buf, .{});
-    try std.testing.expect(info == null);
+    const value = try client.get("client_delete_key", &buf);
+    try std.testing.expect(value == null);
 }
 
-test "Client connection reused after NotStored error" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-        .max_idle = 1,
-    });
+test "Client connection reused after RedisError" {
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{ .max_idle = 1 });
     defer client.deinit();
 
-    // Ensure key doesn't exist
-    client.delete("reuse_test_key") catch {};
+    // Set a string value
+    try client.set("error_test_key", "not_a_number", .{});
 
-    // add() on non-existent key succeeds
-    try client.add("reuse_test_key", "first", .{});
-
-    // add() again should fail with NotStored - but connection should be reused
-    try std.testing.expectError(error.NotStored, client.add("reuse_test_key", "second", .{}));
-
-    // Connection should still work - this would fail if connection was closed
-    var buf: [1024]u8 = undefined;
-    const info = try client.get("reuse_test_key", &buf, .{});
-    try std.testing.expectEqualStrings("first", info.?.value);
-
-    // Verify connection was reused (pool should not be empty)
-    try std.testing.expect(!client.servers[0].pool.isEmpty());
-}
-
-test "Client connection reused after Exists error (CAS conflict)" {
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
-        .max_idle = 1,
-    });
-    defer client.deinit();
-
-    try client.set("cas_reuse_key", "original", .{});
-
-    var buf: [1024]u8 = undefined;
-    const info = try client.get("cas_reuse_key", &buf, .{});
-    const old_cas = info.?.cas;
-
-    // Update the key to invalidate the CAS token
-    try client.set("cas_reuse_key", "updated", .{});
-
-    // CAS with old token should fail with Exists - but connection should be reused
-    try std.testing.expectError(error.Exists, client.set("cas_reuse_key", "conflict", .{ .cas = old_cas }));
+    // Try to increment it - should error but connection should be reused
+    _ = client.incr("error_test_key") catch {};
 
     // Connection should still work
-    const info2 = try client.get("cas_reuse_key", &buf, .{});
-    try std.testing.expectEqualStrings("updated", info2.?.value);
+    var buf: [1024]u8 = undefined;
+    const value = try client.get("error_test_key", &buf);
+    try std.testing.expectEqualStrings("not_a_number", value.?);
 
     // Verify connection was reused
-    try std.testing.expect(!client.servers[0].pool.isEmpty());
-}
-
-test "key distribution across servers" {
-    const servers = &[_][]const u8{
-        "127.0.0.1:21211",
-        "127.0.0.1:21212",
-        "127.0.0.1:21213",
-    };
-
-    // Create distributed client
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = servers,
-        .hasher = .rendezvous,
-    });
-    defer client.deinit();
-
-    // Set 100 keys via distributed client
-    const num_keys = 100;
-    var key_buf: [32]u8 = undefined;
-    for (0..num_keys) |i| {
-        const key = std.fmt.bufPrint(&key_buf, "dist_test_{d}", .{i}) catch unreachable;
-        try client.set(key, "value", .{});
-    }
-
-    // Connect to each server individually and count keys found
-    var counts = [_]usize{ 0, 0, 0 };
-
-    for (servers, 0..) |server_str, server_idx| {
-        const host, const port = parseServer(server_str).?;
-
-        var conn: Connection = undefined;
-        try conn.connect(std.testing.allocator, host, port, .{});
-        defer conn.close();
-
-        var buf: [1024]u8 = undefined;
-        for (0..num_keys) |i| {
-            const key = std.fmt.bufPrint(&key_buf, "dist_test_{d}", .{i}) catch unreachable;
-            if (try conn.get(key, &buf, .{})) |_| {
-                counts[server_idx] += 1;
-            }
-        }
-    }
-
-    // Verify distribution
-    errdefer std.debug.print("\nDistribution: {d} / {d} / {d}\n", .{ counts[0], counts[1], counts[2] });
-
-    var total: usize = 0;
-    for (counts) |c| {
-        total += c;
-        // Each server should have some keys (at least 10%)
-        try std.testing.expect(c >= 10);
-        // But not all keys (at most 60%)
-        try std.testing.expect(c <= 60);
-    }
-
-    // Total should equal num_keys (each key on exactly one server)
-    try std.testing.expectEqual(num_keys, total);
+    try std.testing.expect(!client.pool.isEmpty());
 }
 
 test "retry after server restart" {
     const testing = @import("testing.zig");
 
-    var client = try Client.init(std.testing.allocator, .{
-        .servers = &.{"127.0.0.1:21211"},
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{
         .retry_attempts = 5,
         .retry_interval = .fromMilliseconds(500),
     });
@@ -401,16 +275,16 @@ test "retry after server restart" {
 
     // Verify it's there
     var buf: [1024]u8 = undefined;
-    const info1 = try client.get("retry_test_key", &buf, .{});
-    try std.testing.expectEqualStrings("before_restart", info1.?.value);
+    const value1 = try client.get("retry_test_key", &buf);
+    try std.testing.expectEqualStrings("before_restart", value1.?);
 
     // Stop immediately (no grace period)
-    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "memcached-1" });
+    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "redis-1" });
 
     // Start in background - will take time to be ready
     var start_thread = try std.Thread.spawn(.{}, struct {
         fn run() void {
-            testing.runDockerCompose(std.testing.allocator, &.{ "start", "memcached-1" }) catch {};
+            testing.runDockerCompose(std.testing.allocator, &.{ "start", "redis-1" }) catch {};
         }
     }.run, .{});
 
@@ -419,6 +293,6 @@ test "retry after server restart" {
 
     start_thread.join();
 
-    const info2 = try client.get("retry_test_key", &buf, .{});
-    try std.testing.expectEqualStrings("after_restart", info2.?.value);
+    const value2 = try client.get("retry_test_key", &buf);
+    try std.testing.expectEqualStrings("after_restart", value2.?);
 }

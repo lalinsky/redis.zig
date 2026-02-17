@@ -5,16 +5,14 @@ const gpa = std.heap.smp_allocator;
 pub var runtime: *zio.Runtime = undefined;
 
 pub const Node = enum(u16) {
-    node1 = 21211,
-    node2 = 21212,
-    node3 = 21213,
+    node1 = 26379,
 };
 
 pub fn runDockerComposeCapture(allocator: std.mem.Allocator, compose_args: []const []const u8) !std.process.Child.RunResult {
     var args: std.ArrayListUnmanaged([]const u8) = .{};
     defer args.deinit(allocator);
 
-    try args.appendSlice(allocator, &.{ "docker", "compose", "-f", "docker-compose.test.yml", "-p", "memcached-zig-test" });
+    try args.appendSlice(allocator, &.{ "docker", "compose", "-f", "docker-compose.test.yml", "-p", "redis-zig-test" });
     try args.appendSlice(allocator, compose_args);
 
     return try std.process.Child.run(.{
@@ -30,17 +28,18 @@ pub fn runDockerCompose(allocator: std.mem.Allocator, compose_args: []const []co
 }
 
 pub fn waitForServices(timeout_ms: i64) !void {
-    const nodes = [_]Node{ .node1, .node2, .node3 };
-    for (nodes) |node| {
-        try waitForNode(node, timeout_ms);
-    }
+    try waitForNode(.node1, timeout_ms);
 }
 
 pub fn waitForNode(node: Node, timeout_ms: i64) !void {
     const deadline = std.time.milliTimestamp() + timeout_ms;
     while (std.time.milliTimestamp() < deadline) {
-        if (tryConnect(node)) return;
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        if (tryConnect(node)) {
+            // Give Redis a bit more time to fully initialize after port opens
+            try zio.sleep(.fromMilliseconds(500));
+            return;
+        }
+        try zio.sleep(.fromMilliseconds(100));
     }
     return error.ServiceNotHealthy;
 }
