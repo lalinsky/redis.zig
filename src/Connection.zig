@@ -256,7 +256,7 @@ test "del" {
 
     try conn.set("delete_key", "to_be_deleted", .{});
     const deleted = try conn.del(&.{"delete_key"});
-    try std.testing.expectEqual(@as(i64, 1), deleted);
+    try std.testing.expectEqual(1, deleted);
 
     var buf: [1024]u8 = undefined;
     const value = try conn.get("delete_key", &buf);
@@ -271,16 +271,16 @@ test "incr/decr" {
     try conn.set("counter", "10", .{});
 
     const val1 = try conn.incrBy("counter", 5);
-    try std.testing.expectEqual(@as(i64, 15), val1);
+    try std.testing.expectEqual(15, val1);
 
     const val2 = try conn.decrBy("counter", 3);
-    try std.testing.expectEqual(@as(i64, 12), val2);
+    try std.testing.expectEqual(12, val2);
 
     const val3 = try conn.incr("counter");
-    try std.testing.expectEqual(@as(i64, 13), val3);
+    try std.testing.expectEqual(13, val3);
 
     const val4 = try conn.decr("counter");
-    try std.testing.expectEqual(@as(i64, 12), val4);
+    try std.testing.expectEqual(12, val4);
 }
 
 test "exists" {
@@ -292,7 +292,7 @@ test "exists" {
     try conn.set("exists_key2", "value2", .{});
 
     const count = try conn.exists(&.{ "exists_key1", "exists_key2", "nonexistent" });
-    try std.testing.expectEqual(@as(i64, 2), count);
+    try std.testing.expectEqual(2, count);
 }
 
 test "ping" {

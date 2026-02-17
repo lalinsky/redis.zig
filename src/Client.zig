@@ -241,7 +241,7 @@ test "Client del" {
 
     try client.set("client_delete_key", "to_delete", .{});
     const deleted = try client.del(&.{"client_delete_key"});
-    try std.testing.expectEqual(@as(i64, 1), deleted);
+    try std.testing.expectEqual(1, deleted);
 
     var buf: [1024]u8 = undefined;
     const value = try client.get("client_delete_key", &buf);
