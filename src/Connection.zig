@@ -24,9 +24,9 @@ pub const Options = struct {
 pub const Error = Protocol.Error2;
 
 pub fn connect(self: *Connection, gpa: Allocator, host: []const u8, port: u16, options: Options) !void {
-    const stream = zio.net.tcpConnectToHost(host, port, .{
+    const stream = try zio.net.tcpConnectToHost(host, port, .{
         .timeout = options.connect_timeout,
-    }) catch return error.ConnectionFailed;
+    });
     errdefer stream.close();
 
     const read_buffer = try gpa.alloc(u8, options.read_buffer_size);
@@ -146,7 +146,7 @@ pub fn incrBy(self: *Connection, key: []const u8, delta: i64) !i64 {
 
 /// DECR key - Decrement the integer value of a key by one
 pub fn decr(self: *Connection, key: []const u8) !i64 {
-    return self.call(Protocol.execInteger, .{&.{"DECR", key}});
+    return self.call(Protocol.execInteger, .{&.{ "DECR", key }});
 }
 
 /// DECRBY key decrement - Decrement the integer value of a key by the given amount

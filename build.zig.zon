@@ -1,7 +1,7 @@
 .{
-    .name = .memcached,
+    .name = .redis,
     .version = "0.0.1",
-    .fingerprint = 0x2e7f2a7825dfe6f7,
+    .fingerprint = 0x7b25d01712941ce0,
     .minimum_zig_version = "0.15.0",
     .paths = .{
         "build.zig",

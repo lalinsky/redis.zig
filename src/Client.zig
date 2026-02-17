@@ -279,12 +279,12 @@ test "retry after server restart" {
     try std.testing.expectEqualStrings("before_restart", value1.?);
 
     // Stop immediately (no grace period)
-    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "redis-1" });
+    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "redis" });
 
     // Start in background - will take time to be ready
     var start_thread = try std.Thread.spawn(.{}, struct {
         fn run() void {
-            testing.runDockerCompose(std.testing.allocator, &.{ "start", "redis-1" }) catch {};
+            testing.runDockerCompose(std.testing.allocator, &.{ "start", "redis" }) catch {};
         }
     }.run, .{});
 
