@@ -2,6 +2,7 @@ const std = @import("std");
 const zio = @import("zio");
 const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
+const Pipeline = @import("Pipeline.zig");
 const Pool = @import("Pool.zig");
 const Protocol = @import("Protocol.zig");
 
@@ -55,6 +56,11 @@ pub fn init(gpa: Allocator, server: []const u8, options: Options) !Client {
 
 pub fn deinit(self: *Client) void {
     self.pool.deinit();
+}
+
+pub fn pipeline(self: *Client) !Pipeline {
+    const conn = try self.pool.acquire();
+    return Pipeline.init(conn, &self.pool);
 }
 
 fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnType(func) {

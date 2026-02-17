@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Client = @import("Client.zig");
 pub const Connection = @import("Connection.zig");
+pub const Pipeline = @import("Pipeline.zig");
 pub const Pool = @import("Pool.zig");
 pub const Protocol = @import("Protocol.zig");
 
@@ -18,6 +19,7 @@ pub fn connect(gpa: Allocator, server: []const u8) !Client {
 test {
     _ = Client;
     _ = Connection;
+    _ = Pipeline;
     _ = Pool;
     _ = Protocol;
     _ = @import("testing.zig");

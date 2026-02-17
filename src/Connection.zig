@@ -2,8 +2,11 @@ const std = @import("std");
 const zio = @import("zio");
 const Allocator = std.mem.Allocator;
 const Protocol = @import("Protocol.zig");
+const Pipeline = @import("Pipeline.zig");
 
 const Connection = @This();
+
+pub const max_keys = 64;
 
 node: std.SinglyLinkedList.Node = .{},
 gpa: Allocator,
@@ -54,8 +57,12 @@ pub fn close(self: *Connection) void {
     self.gpa.free(self.write_buffer);
 }
 
-fn protocol(self: *Connection) Protocol {
+pub fn protocol(self: *Connection) Protocol {
     return .{ .reader = &self.reader.interface, .writer = &self.writer.interface };
+}
+
+pub fn pipeline(self: *Connection) Pipeline {
+    return Pipeline.init(self, null);
 }
 
 fn call(self: *Connection, comptime func: anytype, args: anytype) !Payload(@TypeOf(func)) {
@@ -126,8 +133,8 @@ pub const SetOpts = struct {
 
 /// DEL key [key ...] - Delete one or more keys
 pub fn del(self: *Connection, keys: []const []const u8) !i64 {
-    if (keys.len > 64) return error.TooManyKeys;
-    var args_buf: [65][]const u8 = undefined;
+    if (keys.len > max_keys) return error.TooManyKeys;
+    var args_buf: [max_keys + 1][]const u8 = undefined;
     args_buf[0] = "DEL";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);
     return self.call(Protocol.execInteger, .{args_buf[0 .. 1 + keys.len]});
@@ -172,8 +179,8 @@ pub fn ttl(self: *Connection, key: []const u8) !i64 {
 
 /// EXISTS key [key ...] - Determine if keys exist
 pub fn exists(self: *Connection, keys: []const []const u8) !i64 {
-    if (keys.len > 64) return error.TooManyKeys;
-    var args_buf: [65][]const u8 = undefined;
+    if (keys.len > max_keys) return error.TooManyKeys;
+    var args_buf: [max_keys + 1][]const u8 = undefined;
     args_buf[0] = "EXISTS";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);
     return self.call(Protocol.execInteger, .{args_buf[0 .. 1 + keys.len]});
