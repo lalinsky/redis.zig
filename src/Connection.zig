@@ -126,6 +126,7 @@ pub const SetOpts = struct {
 
 /// DEL key [key ...] - Delete one or more keys
 pub fn del(self: *Connection, keys: []const []const u8) !i64 {
+    if (keys.len > 64) return error.TooManyKeys;
     var args_buf: [65][]const u8 = undefined;
     args_buf[0] = "DEL";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);
@@ -171,6 +172,7 @@ pub fn ttl(self: *Connection, key: []const u8) !i64 {
 
 /// EXISTS key [key ...] - Determine if keys exist
 pub fn exists(self: *Connection, keys: []const []const u8) !i64 {
+    if (keys.len > 64) return error.TooManyKeys;
     var args_buf: [65][]const u8 = undefined;
     args_buf[0] = "EXISTS";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);

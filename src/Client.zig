@@ -242,6 +242,24 @@ test "Client del" {
     try std.testing.expect(value == null);
 }
 
+test "Client del/exists with too many keys" {
+    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    defer client.deinit();
+
+    // Create array with 65 keys (exceeds the limit of 64)
+    var keys: [65][]const u8 = undefined;
+    for (&keys, 0..) |*k, i| {
+        k.* = if (i == 0) "key0" else "key1";
+    }
+
+    // Should return TooManyKeys error
+    const del_result = client.del(&keys);
+    try std.testing.expectError(error.TooManyKeys, del_result);
+
+    const exists_result = client.exists(&keys);
+    try std.testing.expectError(error.TooManyKeys, exists_result);
+}
+
 test "Client connection reused after RedisError" {
     var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{ .max_idle = 1 });
     defer client.deinit();
