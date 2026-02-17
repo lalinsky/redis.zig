@@ -85,6 +85,12 @@ pub fn writeCommand(self: Protocol, args: []const []const u8) Error!void {
 
 // --- Reading (Decoding) ---
 
+/// Consume and validate a CRLF sequence
+fn consumeCRLF(self: Protocol) Error!void {
+    const crlf = try self.reader.take(2);
+    if (crlf[0] != '\r' or crlf[1] != '\n') return error.ProtocolError;
+}
+
 /// Read a RESP value. Caller owns returned memory.
 pub fn readValue(self: Protocol, allocator: std.mem.Allocator) Error!Value {
     const line = try self.reader.takeDelimiterInclusive('\n');
@@ -113,8 +119,7 @@ fn readBulkString(self: Protocol, allocator: std.mem.Allocator, len_str: []const
     errdefer allocator.free(buf);
 
     try self.reader.readSliceAll(buf);
-    const crlf = try self.reader.takeDelimiterInclusive('\n');
-    if (crlf.len != 2 or crlf[0] != '\r') return error.ProtocolError;
+    try self.consumeCRLF();
 
     return .{ .bulk_string = buf };
 }
@@ -194,8 +199,7 @@ pub fn execBulkString(self: Protocol, args: []const []const u8, buf: []u8) Error
         if (size > buf.len) return error.ValueTooLarge;
 
         try self.reader.readSliceAll(buf[0..size]);
-        const crlf = try self.reader.takeDelimiterInclusive('\n');
-        if (crlf.len != 2 or crlf[0] != '\r') return error.ProtocolError;
+        try self.consumeCRLF();
 
         return buf[0..size];
     }
@@ -220,14 +224,8 @@ pub fn execOkOrNil(self: Protocol, args: []const []const u8) Error!void {
         if (len > 0) {
             // Skip the value bytes + \r\n
             const size: usize = @intCast(len);
-            var skip_buf: [1024]u8 = undefined;
-            var remaining = size;
-            while (remaining > 0) {
-                const to_skip = @min(remaining, skip_buf.len);
-                try self.reader.readSliceAll(skip_buf[0..to_skip]);
-                remaining -= to_skip;
-            }
-            _ = try self.reader.takeDelimiterInclusive('\n');
+            try self.reader.discardAll(size);
+            try self.consumeCRLF();
         }
         return;
     }
