@@ -58,26 +58,31 @@ fn protocol(self: *Connection) Protocol {
     return .{ .reader = &self.reader.interface, .writer = &self.writer.interface };
 }
 
-fn mapError(err: anyerror, self: *Connection) anyerror {
-    return switch (err) {
-        error.ReadFailed => self.reader.err orelse error.ReadFailed,
-        error.WriteFailed => self.writer.err orelse error.WriteFailed,
-        else => err,
+fn call(self: *Connection, comptime func: anytype, args: anytype) !Payload(@TypeOf(func)) {
+    const p = self.protocol();
+    return @call(.auto, func, .{p} ++ args) catch |err| {
+        switch (err) {
+            error.ReadFailed => return self.reader.err orelse error.ReadFailed,
+            error.WriteFailed => return self.writer.err orelse error.WriteFailed,
+            else => return err,
+        }
     };
+}
+
+fn Payload(comptime F: type) type {
+    const Return = @typeInfo(F).@"fn".return_type.?;
+    return @typeInfo(Return).error_union.payload;
 }
 
 // --- String commands ---
 
 /// GET key - Get the value of a key
 pub fn get(self: *Connection, key: []const u8, buf: []u8) !?[]u8 {
-    const p = self.protocol();
-    return p.execBulkString(&.{ "GET", key }, buf) catch |err| mapError(err, self);
+    return self.call(Protocol.execBulkString, .{ &.{ "GET", key }, buf });
 }
 
 /// SET key value [EX seconds] - Set the string value of a key
 pub fn set(self: *Connection, key: []const u8, value: []const u8, opts: SetOpts) !void {
-    const p = self.protocol();
-
     var args_buf: [8][]const u8 = undefined;
     var args_count: usize = 0;
     args_buf[args_count] = "SET";
@@ -109,35 +114,7 @@ pub fn set(self: *Connection, key: []const u8, value: []const u8, opts: SetOpts)
         args_count += 1;
     }
 
-    // SET with NX/XX can return +OK or nil, SET with GET returns bulk string or nil
-    // For simplicity, we just ignore the response value here
-    p.writeCommand(args_buf[0..args_count]) catch |err| return mapError(err, self);
-    const line = p.reader.takeDelimiterInclusive('\n') catch |err| return mapError(err, self);
-    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
-
-    // Accept +OK (simple string), $-1 (nil), or $N (bulk string with old value for GET)
-    if (line[0] == '+') return; // OK
-    if (line[0] == '$') {
-        // Bulk string response (SET GET) - skip the value
-        const len_str = line[1 .. line.len - 2];
-        const len = std.fmt.parseInt(i64, len_str, 10) catch return error.ProtocolError;
-        if (len == -1) return; // nil is fine (NX/XX failed or GET on non-existent)
-        if (len > 0) {
-            // Skip the value bytes + \r\n
-            const size: usize = @intCast(len);
-            var skip_buf: [1024]u8 = undefined;
-            var remaining = size;
-            while (remaining > 0) {
-                const to_skip = @min(remaining, skip_buf.len);
-                p.reader.readSliceAll(skip_buf[0..to_skip]) catch |err| return mapError(err, self);
-                remaining -= to_skip;
-            }
-            _ = p.reader.takeDelimiterInclusive('\n') catch |err| return mapError(err, self);
-        }
-        return;
-    }
-    if (line[0] == '-') return error.RedisError;
-    return error.UnexpectedType;
+    try self.call(Protocol.execOkOrNil, .{args_buf[0..args_count]});
 }
 
 pub const SetOpts = struct {
@@ -149,92 +126,77 @@ pub const SetOpts = struct {
 
 /// DEL key [key ...] - Delete one or more keys
 pub fn del(self: *Connection, keys: []const []const u8) !i64 {
-    const p = self.protocol();
-
     var args_buf: [65][]const u8 = undefined;
     args_buf[0] = "DEL";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);
-
-    return p.execInteger(args_buf[0 .. 1 + keys.len]) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{args_buf[0 .. 1 + keys.len]});
 }
 
 /// INCR key - Increment the integer value of a key by one
 pub fn incr(self: *Connection, key: []const u8) !i64 {
-    const p = self.protocol();
-    return p.execInteger(&.{ "INCR", key }) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{ "INCR", key }});
 }
 
 /// INCRBY key increment - Increment the integer value of a key by the given amount
 pub fn incrBy(self: *Connection, key: []const u8, delta: i64) !i64 {
-    const p = self.protocol();
     var delta_buf: [32]u8 = undefined;
     const delta_str = std.fmt.bufPrint(&delta_buf, "{d}", .{delta}) catch unreachable;
-    return p.execInteger(&.{ "INCRBY", key, delta_str }) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{ "INCRBY", key, delta_str }});
 }
 
 /// DECR key - Decrement the integer value of a key by one
 pub fn decr(self: *Connection, key: []const u8) !i64 {
-    const p = self.protocol();
-    return p.execInteger(&.{ "DECR", key }) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{"DECR", key}});
 }
 
 /// DECRBY key decrement - Decrement the integer value of a key by the given amount
 pub fn decrBy(self: *Connection, key: []const u8, delta: i64) !i64 {
-    const p = self.protocol();
     var delta_buf: [32]u8 = undefined;
     const delta_str = std.fmt.bufPrint(&delta_buf, "{d}", .{delta}) catch unreachable;
-    return p.execInteger(&.{ "DECRBY", key, delta_str }) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{ "DECRBY", key, delta_str }});
 }
 
 /// EXPIRE key seconds - Set a timeout on key
 pub fn expire(self: *Connection, key: []const u8, seconds: u32) !bool {
-    const p = self.protocol();
     var seconds_buf: [32]u8 = undefined;
     const seconds_str = std.fmt.bufPrint(&seconds_buf, "{d}", .{seconds}) catch unreachable;
-    const result = p.execInteger(&.{ "EXPIRE", key, seconds_str }) catch |err| return mapError(err, self);
+    const result = try self.call(Protocol.execInteger, .{&.{ "EXPIRE", key, seconds_str }});
     return result == 1;
 }
 
 /// TTL key - Get the time to live for a key in seconds
 pub fn ttl(self: *Connection, key: []const u8) !i64 {
-    const p = self.protocol();
-    return p.execInteger(&.{ "TTL", key }) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{ "TTL", key }});
 }
 
 /// EXISTS key [key ...] - Determine if keys exist
 pub fn exists(self: *Connection, keys: []const []const u8) !i64 {
-    const p = self.protocol();
-
     var args_buf: [65][]const u8 = undefined;
     args_buf[0] = "EXISTS";
     @memcpy(args_buf[1 .. 1 + keys.len], keys);
-
-    return p.execInteger(args_buf[0 .. 1 + keys.len]) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{args_buf[0 .. 1 + keys.len]});
 }
 
 // --- Server commands ---
 
 /// PING [message] - Ping the server
 pub fn ping(self: *Connection, message: ?[]const u8) !void {
-    const p = self.protocol();
     if (message) |msg| {
         var buf: [0]u8 = undefined;
-        _ = p.execBulkString(&.{ "PING", msg }, &buf) catch |err| return mapError(err, self);
+        _ = try self.call(Protocol.execBulkString, .{ &.{ "PING", msg }, &buf });
     } else {
-        p.execSimpleString(&.{"PING"}) catch |err| return mapError(err, self);
+        try self.call(Protocol.execSimpleString, .{&.{"PING"}});
     }
 }
 
 /// FLUSHDB - Remove all keys from the current database
 pub fn flushDB(self: *Connection) !void {
-    const p = self.protocol();
-    p.execSimpleString(&.{"FLUSHDB"}) catch |err| return mapError(err, self);
+    try self.call(Protocol.execSimpleString, .{&.{"FLUSHDB"}});
 }
 
 /// DBSIZE - Return the number of keys in the current database
 pub fn dbSize(self: *Connection) !i64 {
-    const p = self.protocol();
-    return p.execInteger(&.{"DBSIZE"}) catch |err| mapError(err, self);
+    return self.call(Protocol.execInteger, .{&.{"DBSIZE"}});
 }
 
 // --- Tests ---

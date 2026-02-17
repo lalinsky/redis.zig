@@ -203,4 +203,36 @@ pub fn execBulkString(self: Protocol, args: []const []const u8, buf: []u8) Error
     return error.UnexpectedType;
 }
 
+/// Execute a command that may return +OK, nil, or a bulk string (like SET with NX/XX/GET)
+/// The response is discarded - we only care about success/failure
+pub fn execOkOrNil(self: Protocol, args: []const []const u8) Error!void {
+    try self.writeCommand(args);
+    const line = try self.reader.takeDelimiterInclusive('\n');
+    if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
+
+    // Accept +OK (simple string), $-1 (nil), or $N (bulk string)
+    if (line[0] == '+') return; // OK
+    if (line[0] == '$') {
+        // Bulk string response - skip the value
+        const len_str = line[1 .. line.len - 2];
+        const len = try std.fmt.parseInt(i64, len_str, 10);
+        if (len == -1) return; // nil is fine (NX/XX failed or GET on non-existent)
+        if (len > 0) {
+            // Skip the value bytes + \r\n
+            const size: usize = @intCast(len);
+            var skip_buf: [1024]u8 = undefined;
+            var remaining = size;
+            while (remaining > 0) {
+                const to_skip = @min(remaining, skip_buf.len);
+                try self.reader.readSliceAll(skip_buf[0..to_skip]);
+                remaining -= to_skip;
+            }
+            _ = try self.reader.takeDelimiterInclusive('\n');
+        }
+        return;
+    }
+    if (line[0] == '-') return error.RedisError;
+    return error.UnexpectedType;
+}
+
 pub const Error2 = Error || error{ValueTooLarge};
