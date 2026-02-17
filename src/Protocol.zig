@@ -232,5 +232,3 @@ pub fn execOkOrNil(self: Protocol, args: []const []const u8) Error!void {
     if (line[0] == '-') return error.RedisError;
     return error.UnexpectedType;
 }
-
-pub const Error2 = Error || error{ValueTooLarge};

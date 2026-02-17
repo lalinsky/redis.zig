@@ -21,7 +21,7 @@ pub const Options = struct {
     write_timeout: zio.Timeout = .none,
 };
 
-pub const Error = Protocol.Error2;
+pub const Error = Protocol.Error;
 
 pub fn connect(self: *Connection, gpa: Allocator, host: []const u8, port: u16, options: Options) !void {
     const stream = try zio.net.tcpConnectToHost(host, port, .{
