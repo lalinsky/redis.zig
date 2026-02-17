@@ -136,10 +136,17 @@ fn readArray(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) 
 
     const size: usize = @intCast(len);
     const arr = try allocator.alloc(Value, size);
-    errdefer allocator.free(arr);
+    var initialized: usize = 0;
+    errdefer {
+        for (arr[0..initialized]) |elem| {
+            freeValue(allocator, elem);
+        }
+        allocator.free(arr);
+    }
 
     for (arr) |*elem| {
         elem.* = try self.readValue(allocator);
+        initialized += 1;
     }
 
     return .{ .array = arr };
