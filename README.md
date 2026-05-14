@@ -1,31 +1,27 @@
 # redis.zig
 
-A Redis client library for Zig, built on [zio](https://github.com/lalinsky/zio) for async I/O.
+A Redis client library for Zig, built on `std.Io` for async I/O.
 
 ## Features
 
-- Async I/O via zio coroutines
+- Async I/O via std.Io
 - Connection pooling
 - RESP2 protocol implementation
 - Basic string commands (GET, SET, DEL, INCR, DECR, etc.)
 - TTL and expiration support
-- Retry logic with configurable attempts and intervals
+- Retry logic with configurable attempts
 
 ## Example
 
 ```zig
 const std = @import("std");
-const zio = @import("zio");
 const redis = @import("redis");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    var rt = try zio.Runtime.init(gpa.allocator(), .{});
-    defer rt.deinit();
-
-    var client = try redis.connect(gpa.allocator(), "localhost:6379");
+    var client = try redis.connect(allocator, io, "localhost:6379");
     defer client.deinit();
 
     // Set a value
