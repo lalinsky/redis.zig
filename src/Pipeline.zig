@@ -207,7 +207,7 @@ const testing = @import("testing.zig");
 
 test "pipeline set + get" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
     defer conn.close();
 
     var pipe = Pipeline.init(&conn, null);
@@ -234,7 +234,7 @@ test "pipeline set + get" {
 
 test "pipeline multiple incr" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
     defer conn.close();
 
     // Set initial value
@@ -259,7 +259,7 @@ test "pipeline multiple incr" {
 
 test "pipeline mixed commands" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
     defer conn.close();
 
     var pipe = Pipeline.init(&conn, null);
@@ -285,7 +285,7 @@ test "pipeline mixed commands" {
 
 test "pipeline error handling" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
     defer conn.close();
 
     var pipe = Pipeline.init(&conn, null);

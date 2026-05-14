@@ -4,18 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zio = b.dependency("zio", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Library module
     const mod = b.addModule("redis", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("zio", zio.module("zio"));
 
     // Examples
     const examples_step = b.step("examples", "Build all examples");
@@ -29,7 +23,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     example.root_module.addImport("redis", mod);
-    example.root_module.addImport("zio", zio.module("zio"));
 
     const install = b.addInstallArtifact(example, .{});
     examples_step.dependOn(&install.step);
