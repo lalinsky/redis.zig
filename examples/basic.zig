@@ -1,17 +1,12 @@
 const std = @import("std");
-const zio = @import("zio");
 const redis = @import("redis");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var rt = try zio.Runtime.init(allocator, .{});
-    defer rt.deinit();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Connect
-    var client = try redis.connect(allocator, "localhost:6379");
+    var client = try redis.connect(allocator, io, "localhost:6379");
     defer client.deinit();
 
     // Ping

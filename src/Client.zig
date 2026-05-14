@@ -1,5 +1,4 @@
 const std = @import("std");
-const zio = @import("zio");
 const Allocator = std.mem.Allocator;
 const Connection = @import("Connection.zig");
 const Pipeline = @import("Pipeline.zig");
@@ -11,28 +10,29 @@ const log = std.log.scoped(.redis);
 const Client = @This();
 
 gpa: Allocator,
+io: std.Io,
 host: []const u8,
 port: u16,
 pool: Pool,
 retry_attempts: usize,
-retry_interval: zio.Duration,
+retry_interval: std.Io.Duration,
 
 pub const Options = struct {
     max_idle: usize = 2,
     read_buffer_size: usize = 4096,
     write_buffer_size: usize = 4096,
-    connect_timeout: zio.Timeout = .none,
-    read_timeout: zio.Timeout = .none,
-    write_timeout: zio.Timeout = .none,
+    connect_timeout: std.Io.Timeout = .none,
+    read_timeout: std.Io.Timeout = .none,
+    write_timeout: std.Io.Timeout = .none,
     retry_attempts: usize = 2,
-    retry_interval: zio.Duration = .zero,
+    retry_interval: std.Io.Duration = .{ .nanoseconds = 0 },
 };
 
 // Re-export types for convenience
 pub const SetOpts = Connection.SetOpts;
 pub const Error = Connection.Error;
 
-pub fn init(gpa: Allocator, server: []const u8, options: Options) !Client {
+pub fn init(gpa: Allocator, io: std.Io, server: []const u8, options: Options) !Client {
     const host, const port = parseServer(server) orelse return error.InvalidServer;
 
     const pool_opts: Pool.Options = .{
@@ -46,9 +46,10 @@ pub fn init(gpa: Allocator, server: []const u8, options: Options) !Client {
 
     return .{
         .gpa = gpa,
+        .io = io,
         .host = host,
         .port = port,
-        .pool = Pool.init(gpa, host, port, pool_opts),
+        .pool = Pool.init(gpa, io, host, port, pool_opts),
         .retry_attempts = options.retry_attempts,
         .retry_interval = options.retry_interval,
     };
@@ -77,7 +78,7 @@ fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnT
                     attempts,
                     self.retry_attempts,
                 });
-                try zio.sleep(self.retry_interval);
+                try self.io.sleep(self.retry_interval, .awake);
                 continue;
             }
             return err;
@@ -98,7 +99,7 @@ fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnT
                     attempts,
                     self.retry_attempts,
                 });
-                try zio.sleep(self.retry_interval);
+                try self.io.sleep(self.retry_interval, .awake);
                 continue;
             }
             return err;
@@ -199,8 +200,10 @@ test "parseServer ipv6" {
     try std.testing.expectEqual(6379, result.?[1]);
 }
 
+const testing = @import("testing.zig");
+
 test "Client get/set" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_test_key", "client_test_value", .{});
@@ -213,7 +216,7 @@ test "Client get/set" {
 }
 
 test "Client get non-existent returns null" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     var buf: [1024]u8 = undefined;
@@ -223,7 +226,7 @@ test "Client get non-existent returns null" {
 }
 
 test "Client incr/decr" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_counter", "100", .{});
@@ -236,7 +239,7 @@ test "Client incr/decr" {
 }
 
 test "Client del" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     try client.set("client_delete_key", "to_delete", .{});
@@ -249,7 +252,7 @@ test "Client del" {
 }
 
 test "Client del/exists with too many keys" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{});
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{});
     defer client.deinit();
 
     // Create array with 65 keys (exceeds the limit of 64)
@@ -267,7 +270,7 @@ test "Client del/exists with too many keys" {
 }
 
 test "Client connection reused after RedisError" {
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{ .max_idle = 1 });
+    var client = try Client.init(std.testing.allocator, std.testing.io, "127.0.0.1:26379", .{ .max_idle = 1 });
     defer client.deinit();
 
     // Set a string value
@@ -286,9 +289,8 @@ test "Client connection reused after RedisError" {
 }
 
 test "retry after server restart" {
-    const testing = @import("testing.zig");
-
-    var client = try Client.init(std.testing.allocator, "127.0.0.1:26379", .{
+    const io = std.testing.io;
+    var client = try Client.init(std.testing.allocator, io, "127.0.0.1:26379", .{
         .retry_attempts = 5,
         .retry_interval = .fromMilliseconds(500),
     });
@@ -303,14 +305,14 @@ test "retry after server restart" {
     try std.testing.expectEqualStrings("before_restart", value1.?);
 
     // Stop immediately (no grace period)
-    try testing.runDockerCompose(std.testing.allocator, &.{ "stop", "-t", "0", "redis" });
+    try testing.runDockerCompose(std.testing.allocator, io, &.{ "stop", "-t", "0", "redis" });
 
     // Start in background - will take time to be ready
     var start_thread = try std.Thread.spawn(.{}, struct {
-        fn run() void {
-            testing.runDockerCompose(std.testing.allocator, &.{ "start", "redis" }) catch {};
+        fn run(_io: std.Io) void {
+            testing.runDockerCompose(std.testing.allocator, _io, &.{ "start", "redis" }) catch {};
         }
-    }.run, .{});
+    }.run, .{io});
 
     // Try immediately with stale connection - should fail and retry
     try client.set("retry_test_key", "after_restart", .{});

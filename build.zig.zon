@@ -2,16 +2,11 @@
     .name = .redis,
     .version = "0.0.1",
     .fingerprint = 0x7b25d01712941ce0,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
     },
-    .dependencies = .{
-        .zio = .{
-            .url = "git+https://github.com/lalinsky/zio?ref=v0.8.2#3ac234eae165177cd75742f922851dc5d373fd12",
-            .hash = "zio-0.8.2-xHbVVC5jGAAYUMZd_BW5eT-HJb_lf-LCGj4PaLOeEkA2",
-        },
-    },
+    .dependencies = .{},
 }

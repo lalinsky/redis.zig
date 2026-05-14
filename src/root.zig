@@ -12,8 +12,8 @@ pub const SetOpts = Connection.SetOpts;
 pub const Error = Connection.Error;
 
 /// Connect to a single Redis server with default options.
-pub fn connect(gpa: Allocator, server: []const u8) !Client {
-    return Client.init(gpa, server, .{});
+pub fn connect(gpa: Allocator, io: std.Io, server: []const u8) !Client {
+    return Client.init(gpa, io, server, .{});
 }
 
 test {
