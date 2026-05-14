@@ -9,7 +9,7 @@ A Redis client library for Zig, built on `std.Io` for async I/O.
 - RESP2 protocol implementation
 - Basic string commands (GET, SET, DEL, INCR, DECR, etc.)
 - TTL and expiration support
-- Retry logic with configurable attempts
+- Retry logic with configurable attempts and intervals
 
 ## Example
 

@@ -19,12 +19,18 @@ write_buffer: []u8,
 pub const Options = struct {
     read_buffer_size: usize = 4096,
     write_buffer_size: usize = 4096,
+    connect_timeout: std.Io.Timeout = .none,
+    read_timeout: std.Io.Timeout = .none,
+    write_timeout: std.Io.Timeout = .none,
 };
 
 pub const Error = Protocol.Error;
 
 pub fn connect(self: *Connection, gpa: Allocator, io: std.Io, host: []const u8, port: u16, options: Options) !void {
-    const stream = try (try std.Io.net.HostName.init(host)).connect(io, port, .{ .mode = .stream });
+    const stream = try (try std.Io.net.HostName.init(host)).connect(io, port, .{
+        .mode = .stream,
+        .timeout = options.connect_timeout,
+    });
     errdefer stream.close(io);
 
     const read_buffer = try gpa.alloc(u8, options.read_buffer_size);
@@ -33,12 +39,31 @@ pub fn connect(self: *Connection, gpa: Allocator, io: std.Io, host: []const u8, 
     const write_buffer = try gpa.alloc(u8, options.write_buffer_size);
     errdefer gpa.free(write_buffer);
 
+    var reader = stream.reader(io, read_buffer);
+    var writer = stream.writer(io, write_buffer);
+
+    if (options.read_timeout != .none) {
+        if (@hasField(std.Io.net.Stream.Reader, "timeout")) {
+            reader.timeout = options.read_timeout;
+        } else {
+            @panic("read_timeout is set but std.Io.net.Stream.Reader does not support timeouts yet, see https://codeberg.org/ziglang/zig/issues/32166");
+        }
+    }
+
+    if (options.write_timeout != .none) {
+        if (@hasField(std.Io.net.Stream.Writer, "timeout")) {
+            writer.timeout = options.write_timeout;
+        } else {
+            @panic("write_timeout is set but std.Io.net.Stream.Writer does not support timeouts yet, see https://codeberg.org/ziglang/zig/issues/32166");
+        }
+    }
+
     self.* = .{
         .gpa = gpa,
         .io = io,
         .stream = stream,
-        .reader = stream.reader(io, read_buffer),
-        .writer = stream.writer(io, write_buffer),
+        .reader = reader,
+        .writer = writer,
         .read_buffer = read_buffer,
         .write_buffer = write_buffer,
     };

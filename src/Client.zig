@@ -15,12 +15,17 @@ host: []const u8,
 port: u16,
 pool: Pool,
 retry_attempts: usize,
+retry_interval: std.Io.Duration,
 
 pub const Options = struct {
     max_idle: usize = 2,
     read_buffer_size: usize = 4096,
     write_buffer_size: usize = 4096,
+    connect_timeout: std.Io.Timeout = .none,
+    read_timeout: std.Io.Timeout = .none,
+    write_timeout: std.Io.Timeout = .none,
     retry_attempts: usize = 2,
+    retry_interval: std.Io.Duration = .{ .nanoseconds = 0 },
 };
 
 // Re-export types for convenience
@@ -34,6 +39,9 @@ pub fn init(gpa: Allocator, io: std.Io, server: []const u8, options: Options) !C
         .max_idle = options.max_idle,
         .read_buffer_size = options.read_buffer_size,
         .write_buffer_size = options.write_buffer_size,
+        .connect_timeout = options.connect_timeout,
+        .read_timeout = options.read_timeout,
+        .write_timeout = options.write_timeout,
     };
 
     return .{
@@ -43,6 +51,7 @@ pub fn init(gpa: Allocator, io: std.Io, server: []const u8, options: Options) !C
         .port = port,
         .pool = Pool.init(gpa, io, host, port, pool_opts),
         .retry_attempts = options.retry_attempts,
+        .retry_interval = options.retry_interval,
     };
 }
 
@@ -69,6 +78,7 @@ fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnT
                     attempts,
                     self.retry_attempts,
                 });
+                try self.io.sleep(self.retry_interval, .awake);
                 continue;
             }
             return err;
@@ -89,6 +99,7 @@ fn withConnection(self: *Client, comptime func: anytype, args: anytype) !ReturnT
                     attempts,
                     self.retry_attempts,
                 });
+                try self.io.sleep(self.retry_interval, .awake);
                 continue;
             }
             return err;
@@ -281,6 +292,7 @@ test "retry after server restart" {
     const io = std.testing.io;
     var client = try Client.init(std.testing.allocator, io, "127.0.0.1:26379", .{
         .retry_attempts = 5,
+        .retry_interval = .fromMilliseconds(500),
     });
     defer client.deinit();
 
