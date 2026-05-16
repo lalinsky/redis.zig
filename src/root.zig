@@ -10,6 +10,8 @@ pub const Protocol = @import("Protocol.zig");
 // Re-export types
 pub const SetOpts = Connection.SetOpts;
 pub const Error = Connection.Error;
+pub const FieldValue = Connection.FieldValue;
+pub const Result = Connection.Result;
 
 /// Connect to a single Redis server with default options.
 pub fn connect(gpa: Allocator, io: std.Io, server: []const u8) !Client {
