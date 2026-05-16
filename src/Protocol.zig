@@ -366,10 +366,8 @@ pub fn readFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator) (Error 
     for (pairs) |*fv| {
         const field = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
         errdefer allocator.free(field);
-        const value = (try self.readBulkStringResponseAlloc(allocator)) orelse {
-            allocator.free(field);
-            return error.ProtocolError;
-        };
+        const value = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
+        errdefer allocator.free(value);
         fv.* = .{ .field = field, .value = value };
         init += 1;
     }
