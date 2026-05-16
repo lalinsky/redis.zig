@@ -31,6 +31,8 @@ pub const Options = struct {
 // Re-export types for convenience
 pub const SetOpts = Connection.SetOpts;
 pub const Error = Connection.Error;
+pub const FieldValue = Connection.FieldValue;
+pub const Result = Connection.Result;
 
 pub fn init(gpa: Allocator, io: std.Io, server: []const u8, options: Options) !Client {
     const host, const port = parseServer(server) orelse return error.InvalidServer;
@@ -162,6 +164,52 @@ pub fn ttl(self: *Client, key: []const u8) !i64 {
 
 pub fn exists(self: *Client, keys: []const []const u8) !i64 {
     return self.withConnection(Connection.exists, .{keys});
+}
+
+// --- Hash commands ---
+
+pub fn hget(self: *Client, key: []const u8, field: []const u8, buf: []u8) !?[]u8 {
+    return self.withConnection(Connection.hget, .{ key, field, buf });
+}
+
+pub fn hset(self: *Client, key: []const u8, field: []const u8, value: []const u8) !i64 {
+    return self.withConnection(Connection.hset, .{ key, field, value });
+}
+
+pub fn hmset(self: *Client, key: []const u8, fields: []const FieldValue) !i64 {
+    return self.withConnection(Connection.hmset, .{ key, fields });
+}
+
+pub fn hdel(self: *Client, key: []const u8, fields: []const []const u8) !i64 {
+    return self.withConnection(Connection.hdel, .{ key, fields });
+}
+
+pub fn hexists(self: *Client, key: []const u8, field: []const u8) !bool {
+    return self.withConnection(Connection.hexists, .{ key, field });
+}
+
+pub fn hlen(self: *Client, key: []const u8) !i64 {
+    return self.withConnection(Connection.hlen, .{key});
+}
+
+pub fn hincrby(self: *Client, key: []const u8, field: []const u8, delta: i64) !i64 {
+    return self.withConnection(Connection.hincrby, .{ key, field, delta });
+}
+
+pub fn hgetall(self: *Client, allocator: Allocator, key: []const u8) !Result([]FieldValue) {
+    return self.withConnection(Connection.hgetall, .{ allocator, key });
+}
+
+pub fn hkeys(self: *Client, allocator: Allocator, key: []const u8) !Result([][]u8) {
+    return self.withConnection(Connection.hkeys, .{ allocator, key });
+}
+
+pub fn hvals(self: *Client, allocator: Allocator, key: []const u8) !Result([][]u8) {
+    return self.withConnection(Connection.hvals, .{ allocator, key });
+}
+
+pub fn hmget(self: *Client, allocator: Allocator, key: []const u8, fields: []const []const u8) !Result([]?[]u8) {
+    return self.withConnection(Connection.hmget, .{ allocator, key, fields });
 }
 
 // --- Server commands ---

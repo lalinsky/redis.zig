@@ -7,6 +7,28 @@ const Connection = @This();
 
 pub const max_keys = 64;
 
+pub const FieldValue = Protocol.FieldValue;
+
+pub fn Result(comptime T: type) type {
+    return struct {
+        arena: *std.heap.ArenaAllocator,
+        value: T,
+
+        pub fn init(allocator: Allocator) !@This() {
+            const arena = try allocator.create(std.heap.ArenaAllocator);
+            errdefer allocator.destroy(arena);
+            arena.* = std.heap.ArenaAllocator.init(allocator);
+            return .{ .arena = arena, .value = undefined };
+        }
+
+        pub fn deinit(self: @This()) void {
+            const allocator = self.arena.child_allocator;
+            self.arena.deinit();
+            allocator.destroy(self.arena);
+        }
+    };
+}
+
 node: std.SinglyLinkedList.Node = .{},
 gpa: Allocator,
 io: std.Io,
@@ -210,6 +232,96 @@ pub fn exists(self: *Connection, keys: []const []const u8) !i64 {
     return self.call(Protocol.execInteger, .{args_buf[0 .. 1 + keys.len]});
 }
 
+// --- Hash commands ---
+
+/// HGET key field - Get the value of a hash field into caller-provided buffer
+pub fn hget(self: *Connection, key: []const u8, field: []const u8, buf: []u8) !?[]u8 {
+    return self.call(Protocol.execBulkString, .{ &.{ "HGET", key, field }, buf });
+}
+
+/// HSET key field value - Set a hash field, returns number of new fields added
+pub fn hset(self: *Connection, key: []const u8, field: []const u8, value: []const u8) !i64 {
+    return self.call(Protocol.execInteger, .{&.{ "HSET", key, field, value }});
+}
+
+/// HSET key field value [field value ...] - Set multiple hash fields
+pub fn hmset(self: *Connection, key: []const u8, fields: []const FieldValue) !i64 {
+    if (fields.len > max_keys) return error.TooManyKeys;
+    var args_buf: [2 + max_keys * 2][]const u8 = undefined;
+    args_buf[0] = "HSET";
+    args_buf[1] = key;
+    for (fields, 0..) |fv, i| {
+        args_buf[2 + i * 2] = fv.field;
+        args_buf[2 + i * 2 + 1] = fv.value;
+    }
+    return self.call(Protocol.execInteger, .{args_buf[0 .. 2 + fields.len * 2]});
+}
+
+/// HDEL key field [field ...] - Delete one or more hash fields
+pub fn hdel(self: *Connection, key: []const u8, fields: []const []const u8) !i64 {
+    if (fields.len > max_keys) return error.TooManyKeys;
+    var args_buf: [max_keys + 2][]const u8 = undefined;
+    args_buf[0] = "HDEL";
+    args_buf[1] = key;
+    @memcpy(args_buf[2 .. 2 + fields.len], fields);
+    return self.call(Protocol.execInteger, .{args_buf[0 .. 2 + fields.len]});
+}
+
+/// HEXISTS key field - Determine if a hash field exists
+pub fn hexists(self: *Connection, key: []const u8, field: []const u8) !bool {
+    const result = try self.call(Protocol.execInteger, .{&.{ "HEXISTS", key, field }});
+    return result == 1;
+}
+
+/// HLEN key - Get the number of fields in a hash
+pub fn hlen(self: *Connection, key: []const u8) !i64 {
+    return self.call(Protocol.execInteger, .{&.{ "HLEN", key }});
+}
+
+/// HINCRBY key field increment - Increment the integer value of a hash field
+pub fn hincrby(self: *Connection, key: []const u8, field: []const u8, delta: i64) !i64 {
+    var delta_buf: [32]u8 = undefined;
+    const delta_str = std.fmt.bufPrint(&delta_buf, "{d}", .{delta}) catch unreachable;
+    return self.call(Protocol.execInteger, .{&.{ "HINCRBY", key, field, delta_str }});
+}
+
+/// HGETALL key - Get all fields and values in a hash
+pub fn hgetall(self: *Connection, allocator: Allocator, key: []const u8) !Result([]FieldValue) {
+    var result = try Result([]FieldValue).init(allocator);
+    errdefer result.deinit();
+    result.value = try self.call(Protocol.execFieldPairsAlloc, .{ result.arena.allocator(), &.{ "HGETALL", key } });
+    return result;
+}
+
+/// HKEYS key - Get all field names in a hash
+pub fn hkeys(self: *Connection, allocator: Allocator, key: []const u8) !Result([][]u8) {
+    var result = try Result([][]u8).init(allocator);
+    errdefer result.deinit();
+    result.value = try self.call(Protocol.execBulkStringArrayAlloc, .{ result.arena.allocator(), &.{ "HKEYS", key } });
+    return result;
+}
+
+/// HVALS key - Get all values in a hash
+pub fn hvals(self: *Connection, allocator: Allocator, key: []const u8) !Result([][]u8) {
+    var result = try Result([][]u8).init(allocator);
+    errdefer result.deinit();
+    result.value = try self.call(Protocol.execBulkStringArrayAlloc, .{ result.arena.allocator(), &.{ "HVALS", key } });
+    return result;
+}
+
+/// HMGET key field [field ...] - Get the values of multiple hash fields
+pub fn hmget(self: *Connection, allocator: Allocator, key: []const u8, fields: []const []const u8) !Result([]?[]u8) {
+    if (fields.len > max_keys) return error.TooManyKeys;
+    var args_buf: [max_keys + 2][]const u8 = undefined;
+    args_buf[0] = "HMGET";
+    args_buf[1] = key;
+    @memcpy(args_buf[2 .. 2 + fields.len], fields);
+    var result = try Result([]?[]u8).init(allocator);
+    errdefer result.deinit();
+    result.value = try self.call(Protocol.execOptBulkStringArrayAlloc, .{ result.arena.allocator(), args_buf[0 .. 2 + fields.len] });
+    return result;
+}
+
 // --- Server commands ---
 
 /// PING - Ping the server
@@ -339,6 +451,201 @@ test "expire and ttl" {
 
     const ttl_val = try conn.ttl("expire_test");
     try std.testing.expect(ttl_val > 0 and ttl_val <= 100);
+}
+
+test "hset/hget" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hget"});
+
+    const added = try conn.hset("hash_hget", "field1", "value1");
+    try std.testing.expectEqual(1, added);
+
+    var buf: [1024]u8 = undefined;
+    const val = try conn.hget("hash_hget", "field1", &buf);
+    try std.testing.expectEqualStrings("value1", val.?);
+
+    const missing = try conn.hget("hash_hget", "nofield", &buf);
+    try std.testing.expect(missing == null);
+}
+
+test "hmset" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hmset"});
+
+    const added = try conn.hmset("hash_hmset", &.{
+        .{ .field = "f1", .value = "v1" },
+        .{ .field = "f2", .value = "v2" },
+    });
+    try std.testing.expectEqual(2, added);
+
+    var buf: [1024]u8 = undefined;
+    try std.testing.expectEqualStrings("v1", (try conn.hget("hash_hmset", "f1", &buf)).?);
+    try std.testing.expectEqualStrings("v2", (try conn.hget("hash_hmset", "f2", &buf)).?);
+}
+
+test "hdel" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hdel"});
+    _ = try conn.hmset("hash_hdel", &.{
+        .{ .field = "f1", .value = "v1" },
+        .{ .field = "f2", .value = "v2" },
+    });
+
+    const deleted = try conn.hdel("hash_hdel", &.{ "f1", "f2", "missing" });
+    try std.testing.expectEqual(2, deleted);
+
+    var buf: [1024]u8 = undefined;
+    try std.testing.expect((try conn.hget("hash_hdel", "f1", &buf)) == null);
+}
+
+test "hexists" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hexists"});
+    _ = try conn.hset("hash_hexists", "field", "value");
+
+    try std.testing.expect(try conn.hexists("hash_hexists", "field"));
+    try std.testing.expect(!try conn.hexists("hash_hexists", "missing"));
+}
+
+test "hlen" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hlen"});
+    _ = try conn.hmset("hash_hlen", &.{
+        .{ .field = "f1", .value = "v1" },
+        .{ .field = "f2", .value = "v2" },
+        .{ .field = "f3", .value = "v3" },
+    });
+
+    try std.testing.expectEqual(3, try conn.hlen("hash_hlen"));
+}
+
+test "hincrby" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hincrby"});
+    _ = try conn.hset("hash_hincrby", "counter", "10");
+
+    try std.testing.expectEqual(15, try conn.hincrby("hash_hincrby", "counter", 5));
+    try std.testing.expectEqual(12, try conn.hincrby("hash_hincrby", "counter", -3));
+}
+
+test "hgetall" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hgetall"});
+    _ = try conn.hmset("hash_hgetall", &.{
+        .{ .field = "a", .value = "1" },
+        .{ .field = "b", .value = "2" },
+    });
+
+    const result = try conn.hgetall(std.testing.allocator, "hash_hgetall");
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.value.len);
+    // Check that both field-value pairs are present (order-independent)
+    var found_a = false;
+    var found_b = false;
+    for (result.value) |fv| {
+        if (std.mem.eql(u8, fv.field, "a")) {
+            try std.testing.expectEqualStrings("1", fv.value);
+            found_a = true;
+        } else if (std.mem.eql(u8, fv.field, "b")) {
+            try std.testing.expectEqualStrings("2", fv.value);
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
+}
+
+test "hgetall empty hash" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hgetall_empty"});
+
+    const result = try conn.hgetall(std.testing.allocator, "hash_hgetall_empty");
+    defer result.deinit();
+
+    try std.testing.expectEqual(0, result.value.len);
+}
+
+test "hkeys/hvals" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hkeys"});
+    _ = try conn.hmset("hash_hkeys", &.{
+        .{ .field = "f1", .value = "v1" },
+        .{ .field = "f2", .value = "v2" },
+    });
+
+    const keys = try conn.hkeys(std.testing.allocator, "hash_hkeys");
+    defer keys.deinit();
+    try std.testing.expectEqual(2, keys.value.len);
+    // Check that both keys are present (order-independent)
+    var found_f1 = false;
+    var found_f2 = false;
+    for (keys.value) |k| {
+        if (std.mem.eql(u8, k, "f1")) found_f1 = true;
+        if (std.mem.eql(u8, k, "f2")) found_f2 = true;
+    }
+    try std.testing.expect(found_f1);
+    try std.testing.expect(found_f2);
+
+    const vals = try conn.hvals(std.testing.allocator, "hash_hkeys");
+    defer vals.deinit();
+    try std.testing.expectEqual(2, vals.value.len);
+    // Check that both values are present (order-independent)
+    var found_v1 = false;
+    var found_v2 = false;
+    for (vals.value) |v| {
+        if (std.mem.eql(u8, v, "v1")) found_v1 = true;
+        if (std.mem.eql(u8, v, "v2")) found_v2 = true;
+    }
+    try std.testing.expect(found_v1);
+    try std.testing.expect(found_v2);
+}
+
+test "hmget" {
+    var conn: Connection = undefined;
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    defer conn.close();
+
+    _ = try conn.del(&.{"hash_hmget"});
+    _ = try conn.hmset("hash_hmget", &.{
+        .{ .field = "f1", .value = "v1" },
+        .{ .field = "f2", .value = "v2" },
+    });
+
+    const result = try conn.hmget(std.testing.allocator, "hash_hmget", &.{ "f1", "missing", "f2" });
+    defer result.deinit();
+
+    try std.testing.expectEqual(3, result.value.len);
+    try std.testing.expectEqualStrings("v1", result.value[0].?);
+    try std.testing.expect(result.value[1] == null);
+    try std.testing.expectEqualStrings("v2", result.value[2].?);
 }
 
 test "set NX (only if not exists)" {

@@ -34,6 +34,8 @@ pub fn isResumable(err: anyerror) bool {
     };
 }
 
+pub const FieldValue = struct { field: []const u8, value: []const u8 };
+
 pub const Value = union(enum) {
     simple_string: []const u8,
     err: []const u8,
@@ -280,4 +282,100 @@ pub fn execBulkString(self: Protocol, args: []const []const u8, buf: []u8) Error
 pub fn execOkOrNil(self: Protocol, args: []const []const u8) Error!void {
     try self.writeCommand(args);
     return self.readOkOrNilResponse();
+}
+
+/// Execute a command and expect a bulk string response, allocating memory
+pub fn execBulkStringAlloc(self: Protocol, allocator: std.mem.Allocator, args: []const []const u8) (Error || error{OutOfMemory})!?[]u8 {
+    try self.writeCommand(args);
+    return self.readBulkStringResponseAlloc(allocator);
+}
+
+/// Read a RESP array of non-null bulk strings, allocating memory
+pub fn readBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator) (Error || error{OutOfMemory})![][]u8 {
+    const resp = try self.readResponseLine();
+    if (resp.type_byte == '-') return error.RedisError;
+    if (resp.type_byte != '*') return error.UnexpectedType;
+    const len = try std.fmt.parseInt(i64, resp.data, 10);
+    if (len < 0) return error.ProtocolError;
+    if (len == 0) return try allocator.alloc([]u8, 0);
+    const size: usize = @intCast(len);
+    const result = try allocator.alloc([]u8, size);
+    var init: usize = 0;
+    errdefer {
+        for (result[0..init]) |s| allocator.free(s);
+        allocator.free(result);
+    }
+    for (result) |*item| {
+        item.* = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
+        init += 1;
+    }
+    return result;
+}
+
+/// Read a RESP array of optional bulk strings (elements may be nil), allocating memory
+pub fn readOptBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator) (Error || error{OutOfMemory})![]?[]u8 {
+    const resp = try self.readResponseLine();
+    if (resp.type_byte == '-') return error.RedisError;
+    if (resp.type_byte != '*') return error.UnexpectedType;
+    const len = try std.fmt.parseInt(i64, resp.data, 10);
+    if (len < 0) return error.ProtocolError;
+    if (len == 0) return try allocator.alloc(?[]u8, 0);
+    const size: usize = @intCast(len);
+    const result = try allocator.alloc(?[]u8, size);
+    var init: usize = 0;
+    errdefer {
+        for (result[0..init]) |s| if (s) |str| allocator.free(str);
+        allocator.free(result);
+    }
+    for (result) |*item| {
+        item.* = try self.readBulkStringResponseAlloc(allocator);
+        init += 1;
+    }
+    return result;
+}
+
+/// Execute a command and read an array of non-null bulk strings
+pub fn execBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator, args: []const []const u8) (Error || error{OutOfMemory})![][]u8 {
+    try self.writeCommand(args);
+    return self.readBulkStringArrayAlloc(allocator);
+}
+
+/// Execute a command and read an array of optional bulk strings
+pub fn execOptBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator, args: []const []const u8) (Error || error{OutOfMemory})![]?[]u8 {
+    try self.writeCommand(args);
+    return self.readOptBulkStringArrayAlloc(allocator);
+}
+
+/// Read a RESP array of alternating field/value bulk strings directly into []FieldValue
+pub fn readFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator) (Error || error{OutOfMemory})![]FieldValue {
+    const resp = try self.readResponseLine();
+    if (resp.type_byte == '-') return error.RedisError;
+    if (resp.type_byte != '*') return error.UnexpectedType;
+    const total_len = try std.fmt.parseInt(i64, resp.data, 10);
+    if (total_len < 0 or @mod(total_len, 2) != 0) return error.ProtocolError;
+    const pair_count: usize = @intCast(@divExact(total_len, 2));
+    const pairs = try allocator.alloc(FieldValue, pair_count);
+    var init: usize = 0;
+    errdefer {
+        for (pairs[0..init]) |fv| {
+            allocator.free(fv.field);
+            allocator.free(fv.value);
+        }
+        allocator.free(pairs);
+    }
+    for (pairs) |*fv| {
+        const field = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
+        errdefer allocator.free(field);
+        const value = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
+        errdefer allocator.free(value);
+        fv.* = .{ .field = field, .value = value };
+        init += 1;
+    }
+    return pairs;
+}
+
+/// Execute a command and read alternating field/value pairs into []FieldValue
+pub fn execFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator, args: []const []const u8) (Error || error{OutOfMemory})![]FieldValue {
+    try self.writeCommand(args);
+    return self.readFieldPairsAlloc(allocator);
 }
