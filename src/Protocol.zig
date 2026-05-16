@@ -297,7 +297,7 @@ pub fn readBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator) (E
     if (resp.type_byte != '*') return error.UnexpectedType;
     const len = try std.fmt.parseInt(i64, resp.data, 10);
     if (len < 0) return error.ProtocolError;
-    if (len == 0) return &.{};
+    if (len == 0) return try allocator.alloc([]u8, 0);
     const size: usize = @intCast(len);
     const result = try allocator.alloc([]u8, size);
     var init: usize = 0;
@@ -319,7 +319,7 @@ pub fn readOptBulkStringArrayAlloc(self: Protocol, allocator: std.mem.Allocator)
     if (resp.type_byte != '*') return error.UnexpectedType;
     const len = try std.fmt.parseInt(i64, resp.data, 10);
     if (len < 0) return error.ProtocolError;
-    if (len == 0) return &.{};
+    if (len == 0) return try allocator.alloc(?[]u8, 0);
     const size: usize = @intCast(len);
     const result = try allocator.alloc(?[]u8, size);
     var init: usize = 0;
@@ -365,7 +365,11 @@ pub fn readFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator) (Error 
     }
     for (pairs) |*fv| {
         const field = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
-        const value = (try self.readBulkStringResponseAlloc(allocator)) orelse return error.ProtocolError;
+        errdefer allocator.free(field);
+        const value = (try self.readBulkStringResponseAlloc(allocator)) orelse {
+            allocator.free(field);
+            return error.ProtocolError;
+        };
         fv.* = .{ .field = field, .value = value };
         init += 1;
     }

@@ -561,11 +561,20 @@ test "hgetall" {
     defer result.deinit();
 
     try std.testing.expectEqual(2, result.value.len);
-    // Redis returns fields in insertion order for small hashes
-    try std.testing.expectEqualStrings("a", result.value[0].field);
-    try std.testing.expectEqualStrings("1", result.value[0].value);
-    try std.testing.expectEqualStrings("b", result.value[1].field);
-    try std.testing.expectEqualStrings("2", result.value[1].value);
+    // Check that both field-value pairs are present (order-independent)
+    var found_a = false;
+    var found_b = false;
+    for (result.value) |fv| {
+        if (std.mem.eql(u8, fv.field, "a")) {
+            try std.testing.expectEqualStrings("1", fv.value);
+            found_a = true;
+        } else if (std.mem.eql(u8, fv.field, "b")) {
+            try std.testing.expectEqualStrings("2", fv.value);
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a);
+    try std.testing.expect(found_b);
 }
 
 test "hgetall empty hash" {
@@ -595,14 +604,28 @@ test "hkeys/hvals" {
     const keys = try conn.hkeys(std.testing.allocator, "hash_hkeys");
     defer keys.deinit();
     try std.testing.expectEqual(2, keys.value.len);
-    try std.testing.expectEqualStrings("f1", keys.value[0]);
-    try std.testing.expectEqualStrings("f2", keys.value[1]);
+    // Check that both keys are present (order-independent)
+    var found_f1 = false;
+    var found_f2 = false;
+    for (keys.value) |k| {
+        if (std.mem.eql(u8, k, "f1")) found_f1 = true;
+        if (std.mem.eql(u8, k, "f2")) found_f2 = true;
+    }
+    try std.testing.expect(found_f1);
+    try std.testing.expect(found_f2);
 
     const vals = try conn.hvals(std.testing.allocator, "hash_hkeys");
     defer vals.deinit();
     try std.testing.expectEqual(2, vals.value.len);
-    try std.testing.expectEqualStrings("v1", vals.value[0]);
-    try std.testing.expectEqualStrings("v2", vals.value[1]);
+    // Check that both values are present (order-independent)
+    var found_v1 = false;
+    var found_v2 = false;
+    for (vals.value) |v| {
+        if (std.mem.eql(u8, v, "v1")) found_v1 = true;
+        if (std.mem.eql(u8, v, "v2")) found_v2 = true;
+    }
+    try std.testing.expect(found_v1);
+    try std.testing.expect(found_v2);
 }
 
 test "hmget" {

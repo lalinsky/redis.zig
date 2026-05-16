@@ -164,17 +164,18 @@ pub fn exists(self: *Pipeline, keys: []const []const u8) !void {
 // --- Hash commands ---
 
 pub fn hget(self: *Pipeline, key: []const u8, field: []const u8) !void {
-    try self.writeCommand(&.{ "HGET", key, field });
     try self.appendPending(.bulk_string);
+    try self.writeCommand(&.{ "HGET", key, field });
 }
 
 pub fn hset(self: *Pipeline, key: []const u8, field: []const u8, value: []const u8) !void {
-    try self.writeCommand(&.{ "HSET", key, field, value });
     try self.appendPending(.integer);
+    try self.writeCommand(&.{ "HSET", key, field, value });
 }
 
 pub fn hmset(self: *Pipeline, key: []const u8, fields: []const Connection.FieldValue) !void {
     if (fields.len > Connection.max_keys) return error.TooManyKeys;
+    try self.appendPending(.integer);
     var args_buf: [2 + Connection.max_keys * 2][]const u8 = undefined;
     args_buf[0] = "HSET";
     args_buf[1] = key;
@@ -183,34 +184,33 @@ pub fn hmset(self: *Pipeline, key: []const u8, fields: []const Connection.FieldV
         args_buf[2 + i * 2 + 1] = fv.value;
     }
     try self.writeCommand(args_buf[0 .. 2 + fields.len * 2]);
-    try self.appendPending(.integer);
 }
 
 pub fn hdel(self: *Pipeline, key: []const u8, fields: []const []const u8) !void {
     if (fields.len > Connection.max_keys) return error.TooManyKeys;
+    try self.appendPending(.integer);
     var args_buf: [Connection.max_keys + 2][]const u8 = undefined;
     args_buf[0] = "HDEL";
     args_buf[1] = key;
     @memcpy(args_buf[2 .. 2 + fields.len], fields);
     try self.writeCommand(args_buf[0 .. 2 + fields.len]);
-    try self.appendPending(.integer);
 }
 
 pub fn hexists(self: *Pipeline, key: []const u8, field: []const u8) !void {
-    try self.writeCommand(&.{ "HEXISTS", key, field });
     try self.appendPending(.integer);
+    try self.writeCommand(&.{ "HEXISTS", key, field });
 }
 
 pub fn hlen(self: *Pipeline, key: []const u8) !void {
-    try self.writeCommand(&.{ "HLEN", key });
     try self.appendPending(.integer);
+    try self.writeCommand(&.{ "HLEN", key });
 }
 
 pub fn hincrby(self: *Pipeline, key: []const u8, field: []const u8, delta: i64) !void {
+    try self.appendPending(.integer);
     var delta_buf: [32]u8 = undefined;
     const delta_str = std.fmt.bufPrint(&delta_buf, "{d}", .{delta}) catch unreachable;
     try self.writeCommand(&.{ "HINCRBY", key, field, delta_str });
-    try self.appendPending(.integer);
 }
 
 // --- Server commands ---
