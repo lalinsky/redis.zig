@@ -17,7 +17,29 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-const BORDER = "=" ** 80;
+const BORDER: [80]u8 = @splat('=');
+
+// `std.testing.allocator_instance` is a `DebugAllocator` in Zig 0.16 and a
+// `SafeAllocator` in 0.17.
+const testing_allocator_is_safe = @hasDecl(std.heap, "SafeAllocator") and
+    @TypeOf(std.testing.allocator_instance) == std.heap.SafeAllocator;
+
+fn initTestingAllocator(backing: Allocator) void {
+    if (testing_allocator_is_safe) {
+        std.testing.allocator_instance = .init(backing, .{});
+    } else {
+        std.testing.allocator_instance = .{ .backing_allocator = backing };
+    }
+}
+
+/// Whether the test leaked.
+fn deinitTestingAllocator() bool {
+    if (testing_allocator_is_safe) {
+        return std.testing.allocator_instance.deinit() != 0;
+    } else {
+        return std.testing.allocator_instance.deinit() == .leak;
+    }
+}
 
 // Log capture for suppressing logs in passing tests.
 // The Io is stashed at startup so the global log callback can perform mutex
@@ -113,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
                 .argv0 = .init(init.minimal.args),
                 .environ = init.minimal.environ,
             });
-            std.testing.allocator_instance = .{ .backing_allocator = gpa };
+            initTestingAllocator(gpa);
 
             t.func() catch |err| {
                 Printer.status(.fail, "\nsetup \"{s}\" failed: {}\n", .{ t.name, err });
@@ -192,7 +214,7 @@ pub fn main(init: std.process.Init) !void {
         test_index += 1;
 
         current_test = friendly_name;
-        std.testing.allocator_instance = .{};
+        initTestingAllocator(std.heap.page_allocator);
         std.testing.io_instance = .init(gpa, .{
             .argv0 = .init(init.minimal.args),
             .environ = init.minimal.environ,
@@ -220,7 +242,7 @@ pub fn main(init: std.process.Init) !void {
 
         const ns_taken = slowest.endTiming(io, gpa, friendly_name);
 
-        if (std.testing.allocator_instance.deinit() == .leak) {
+        if (deinitTestingAllocator()) {
             leak += 1;
             Printer.status(.fail, "\n{s}\n\"{s}\" - Memory Leak\n{s}\n", .{ BORDER, friendly_name, BORDER });
         }
@@ -289,7 +311,7 @@ pub fn main(init: std.process.Init) !void {
                 .argv0 = .init(init.minimal.args),
                 .environ = init.minimal.environ,
             });
-            std.testing.allocator_instance = .{ .backing_allocator = gpa };
+            initTestingAllocator(gpa);
 
             t.func() catch |err| {
                 Printer.status(.fail, "\nteardown \"{s}\" failed: {}\n", .{ t.name, err });

@@ -345,7 +345,7 @@ const testing = @import("testing.zig");
 
 test "simple get/set" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("test_key", "test_value", .{});
@@ -359,7 +359,7 @@ test "simple get/set" {
 
 test "get non-existent key returns null" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     var buf: [1024]u8 = undefined;
@@ -370,7 +370,7 @@ test "get non-existent key returns null" {
 
 test "set with expiration" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("ttl_key", "ttl_value", .{ .ex = 60 });
@@ -387,7 +387,7 @@ test "set with expiration" {
 
 test "del" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("delete_key", "to_be_deleted", .{});
@@ -401,7 +401,7 @@ test "del" {
 
 test "incr/decr" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("counter", "10", .{});
@@ -421,7 +421,7 @@ test "incr/decr" {
 
 test "exists" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("exists_key1", "value1", .{});
@@ -433,7 +433,7 @@ test "exists" {
 
 test "ping" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.ping();
@@ -441,7 +441,7 @@ test "ping" {
 
 test "expire and ttl" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     try conn.set("expire_test", "value", .{});
@@ -455,7 +455,7 @@ test "expire and ttl" {
 
 test "hset/hget" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hget"});
@@ -473,7 +473,7 @@ test "hset/hget" {
 
 test "hmset" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hmset"});
@@ -491,7 +491,7 @@ test "hmset" {
 
 test "hdel" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hdel"});
@@ -509,7 +509,7 @@ test "hdel" {
 
 test "hexists" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hexists"});
@@ -521,7 +521,7 @@ test "hexists" {
 
 test "hlen" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hlen"});
@@ -536,7 +536,7 @@ test "hlen" {
 
 test "hincrby" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hincrby"});
@@ -548,7 +548,7 @@ test "hincrby" {
 
 test "hgetall" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hgetall"});
@@ -579,7 +579,7 @@ test "hgetall" {
 
 test "hgetall empty hash" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hgetall_empty"});
@@ -592,7 +592,7 @@ test "hgetall empty hash" {
 
 test "hkeys/hvals" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hkeys"});
@@ -630,7 +630,7 @@ test "hkeys/hvals" {
 
 test "hmget" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     _ = try conn.del(&.{"hash_hmget"});
@@ -650,7 +650,7 @@ test "hmget" {
 
 test "set NX (only if not exists)" {
     var conn: Connection = undefined;
-    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", @intFromEnum(testing.Node.node1), .{});
+    try conn.connect(std.testing.allocator, std.testing.io, "127.0.0.1", testing.node1, .{});
     defer conn.close();
 
     // Delete first to ensure clean state
