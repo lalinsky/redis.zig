@@ -2,6 +2,8 @@
 
 A Redis client library for Zig, built on `std.Io` for async I/O.
 
+Works with Zig 0.16 and 0.17.
+
 ## Features
 
 - Async I/O via std.Io
