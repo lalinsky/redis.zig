@@ -99,7 +99,7 @@ fn consumeCRLF(self: Protocol) Error!void {
 }
 
 /// Read a RESP value. Caller owns returned memory.
-pub fn readValue(self: Protocol, allocator: std.mem.Allocator) Error!Value {
+pub fn readValue(self: Protocol, allocator: std.mem.Allocator) (Error || error{OutOfMemory})!Value {
     const line = try self.reader.takeDelimiterInclusive('\n');
     if (line.len < 2 or line[line.len - 2] != '\r') return error.ProtocolError;
 
@@ -116,7 +116,7 @@ pub fn readValue(self: Protocol, allocator: std.mem.Allocator) Error!Value {
     };
 }
 
-fn readBulkString(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) Error!Value {
+fn readBulkString(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) (Error || error{OutOfMemory})!Value {
     const len = try std.fmt.parseInt(i64, len_str, 10);
     if (len == -1) return .{ .bulk_string = null }; // nil
     if (len < 0) return error.ProtocolError;
@@ -131,7 +131,7 @@ fn readBulkString(self: Protocol, allocator: std.mem.Allocator, len_str: []const
     return .{ .bulk_string = buf };
 }
 
-fn readArray(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) Error!Value {
+fn readArray(self: Protocol, allocator: std.mem.Allocator, len_str: []const u8) (Error || error{OutOfMemory})!Value {
     const len = try std.fmt.parseInt(i64, len_str, 10);
     if (len == -1) return .{ .array = &.{} }; // nil array (empty slice)
     if (len < 0) return error.ProtocolError;
@@ -378,4 +378,24 @@ pub fn readFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator) (Error 
 pub fn execFieldPairsAlloc(self: Protocol, allocator: std.mem.Allocator, args: []const []const u8) (Error || error{OutOfMemory})![]FieldValue {
     try self.writeCommand(args);
     return self.readFieldPairsAlloc(allocator);
+}
+
+test "readValue" {
+    var reader: std.Io.Reader = .fixed("*5\r\n+OK\r\n-ERR no\r\n:42\r\n$3\r\nfoo\r\n*2\r\n$-1\r\n*0\r\n");
+    var writer: std.Io.Writer = .failing;
+    const protocol: Protocol = .{ .reader = &reader, .writer = &writer };
+
+    const value = try protocol.readValue(std.testing.allocator);
+    defer freeValue(std.testing.allocator, value);
+
+    const items = try value.asArray();
+    try std.testing.expectEqual(5, items.len);
+    try std.testing.expectEqualStrings("OK", try items[0].asSimpleString());
+    try std.testing.expectEqualStrings("ERR no", items[1].err);
+    try std.testing.expectEqual(42, try items[2].asInteger());
+    try std.testing.expectEqualStrings("foo", (try items[3].asBulkString()).?);
+    const nested = try items[4].asArray();
+    try std.testing.expectEqual(2, nested.len);
+    try std.testing.expectEqual(null, try nested[0].asBulkString());
+    try std.testing.expectEqual(0, (try nested[1].asArray()).len);
 }
